@@ -12,8 +12,8 @@ from PIL import Image
 
 
 def cut_rectangles_multich_with_overlay(
-    geojson_path,                # ROI polygons
-    cells_geojson_path,          # cell polygons
+    geojson_path,                # ROI polygons (glomeruli)
+    cells_geojson_path,          # cell polygons (segmented cells)
     ome_tiff_path,               # OME-TIFF with subdatasets
     output_dir,                  # where to save PNGs
     prefix=None,                 # filename prefix (defaults to TIFF stem)
@@ -62,11 +62,11 @@ def cut_rectangles_multich_with_overlay(
         cells_sindex = cells_gdf.sindex if not cells_gdf.empty else None
 
         for i, row in gdf.iterrows():
-            geom = row.geometry
-            if geom is None or geom.is_empty:
+            glom_geom = row.geometry
+            if glom_geom is None or glom_geom.is_empty:
                 continue
 
-            minx, miny, maxx, maxy = geom.bounds
+            minx, miny, maxx, maxy = glom_geom.bounds
             cropped_list = []
             used_transform = None
             target_shape = None
@@ -108,32 +108,36 @@ def cut_rectangles_multich_with_overlay(
             stacked = np.concatenate(cropped_list, axis=0)  # (B, H, W)
             B, H, W = stacked.shape
 
-            # Build an RGB preview from first 3 channels (per-band min-max)
+            # ---- Build RGB preview from first 3 channels (per-band min-max) ----
             if B >= 3:
                 rgb = stacked[:3].astype(np.float32)
             else:
-                # If fewer than 3 channels, duplicate/extend to 3 for visualization
                 rgb = np.vstack([stacked[:1]] * 3).astype(np.float32)  # (3,H,W)
-
             for c in range(3):
                 band = rgb[c]
                 mn, mx = float(band.min()), float(band.max())
                 rgb[c] = (band - mn) / (mx - mn) if mx > mn else 0.0
-
-            rgb = (rgb * 255.0).clip(0, 255).astype(np.uint8)         # (3,H,W)
-            rgb = np.transpose(rgb, (1, 2, 0))                        # (H,W,3)
+            rgb = (rgb * 255.0).clip(0, 255).astype(np.uint8)
+            rgb = np.transpose(rgb, (1, 2, 0))  # (H,W,3)
             rgb_img = Image.fromarray(rgb, mode="RGB")
 
-            # ---- Build boolean cell mask for this crop (H,W) ----
+            # ---- Build boolean cell mask for this crop (H,W), **inside glomerulus only** ----
             mask_array = np.zeros((H, W), dtype=np.uint8)
             if cells_sindex is not None:
                 if geo_mode:
-                    crop_bbox_geom = box(minx, miny, maxx, maxy)
-                    cand_idx = list(cells_sindex.intersection(crop_bbox_geom.bounds))
+                    # Candidate cells by bbox, but keep only those intersecting the glomerulus polygon
+                    cand_idx = list(cells_sindex.intersection(glom_geom.bounds))
                     if cand_idx:
                         cand = cells_gdf.iloc[cand_idx]
-                        cand = cand[cand.geometry.intersects(crop_bbox_geom)]
-                        shapes = [(g.intersection(crop_bbox_geom), 1) for g in cand.geometry if g and not g.is_empty]
+                        cand = cand[cand.geometry.intersects(glom_geom)]
+                        # Rasterize intersection (cell ∩ glomerulus) using the crop transform
+                        shapes = []
+                        for g in cand.geometry:
+                            if g is None or g.is_empty:
+                                continue
+                            gi = g.intersection(glom_geom)
+                            if not gi.is_empty:
+                                shapes.append((gi, 1))
                         if shapes:
                             mask_array = rasterize(
                                 shapes=shapes,
@@ -144,29 +148,37 @@ def cut_rectangles_multich_with_overlay(
                                 dtype='uint8'
                             )
                 else:
-                    # Pixel mode: shift polygons by crop origin so (0,0) is top-left of crop
+                    # Pixel mode: translate BOTH glom polygon and cells into crop-local pixel coords
                     col0, row0 = int(win_for_cells.col_off), int(win_for_cells.row_off)
-                    crop_bbox_px = box(minx, miny, maxx, maxy)
-                    cand_idx = list(cells_sindex.intersection(crop_bbox_px.bounds))
-                    if cand_idx:
-                        cand = cells_gdf.iloc[cand_idx]
-                        cand = cand[cand.geometry.intersects(crop_bbox_px)]
-                        shifted = []
-                        for g in cand.geometry:
-                            if g is None or g.is_empty:
-                                continue
-                            g2 = translate(g, xoff=-col0, yoff=-row0).intersection(box(0, 0, W, H))
-                            if not g2.is_empty:
-                                shifted.append((g2, 1))
-                        if shifted:
-                            mask_array = rasterize(
-                                shapes=shifted,
-                                out_shape=(H, W),
-                                transform=Affine.identity(),
-                                fill=0,
-                                default_value=1,
-                                dtype='uint8'
-                            )
+                    # Shift glomerulus polygon into crop coords and clip to window
+                    glom_shifted = translate(glom_geom, xoff=-col0, yoff=-row0)
+                    glom_shifted = glom_shifted.intersection(box(0, 0, W, H))
+                    if not glom_shifted.is_empty:
+                        # Candidate cells by original (pixel) bbox
+                        cand_idx = list(cells_sindex.intersection(glom_geom.bounds))
+                        if cand_idx:
+                            cand = cells_gdf.iloc[cand_idx]
+                            # Keep those truly intersecting the glomerulus polygon
+                            cand = cand[cand.geometry.intersects(glom_geom)]
+                            shapes = []
+                            for g in cand.geometry:
+                                if g is None or g.is_empty:
+                                    continue
+                                g2 = translate(g, xoff=-col0, yoff=-row0)
+                                # Keep only part within the crop window and inside glom
+                                g2 = g2.intersection(box(0, 0, W, H))
+                                gi = g2.intersection(glom_shifted)
+                                if not gi.is_empty:
+                                    shapes.append((gi, 1))
+                            if shapes:
+                                mask_array = rasterize(
+                                    shapes=shapes,
+                                    out_shape=(H, W),
+                                    transform=Affine.identity(),  # pixel coords
+                                    fill=0,
+                                    default_value=1,
+                                    dtype='uint8'
+                                )
 
             # ---- Save PNG of the crop ----
             crop_png = out_dir / f"{prefix}_polygon_{i:04d}.png"
@@ -174,14 +186,10 @@ def cut_rectangles_multich_with_overlay(
 
             # ---- Save overlay PNG (semi-transparent mask over crop) ----
             overlay_png = out_dir / f"{prefix}_polygon_{i:04d}_overlay.png"
-            # Make an RGBA version of the crop
             rgba = rgb_img.convert("RGBA")
-            # Create a solid color image with desired alpha, then use mask_array as the alpha mask multiplier
             overlay = Image.new("RGBA", (W, H), overlay_color + (0,))
-            # Build alpha channel from mask_array (0 or 1) scaled by overlay_alpha
             alpha_channel = (mask_array.astype(np.uint8) * overlay_alpha)
             overlay.putalpha(Image.fromarray(alpha_channel, mode="L"))
-            # Composite: crop under, colored mask over
             out_overlay = Image.alpha_composite(rgba, overlay)
             out_overlay.convert("RGB").save(overlay_png)
 
@@ -196,7 +204,7 @@ def cut_rectangles_multich_with_overlay(
 if __name__ == "__main__":
     # Folders
     labels_dir = Path("/data/pwojcik/For_Piotr/Labels/glom_labels")  # ROI polygons
-    cells_dir  = Path("/data/pwojcik/For_Piotr/Labels/cells_labels")  # cell polygons
+    cells_dir  = Path("/data/pwojcik/For_Piotr/Labels/cell_labels")  # cell polygons
     images_dir = Path("/data/pwojcik/For_Piotr/Images")
     out_root   = Path("/data/pwojcik/For_Piotr/gloms_rect")
 
