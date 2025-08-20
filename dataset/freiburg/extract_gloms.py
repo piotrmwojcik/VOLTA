@@ -31,6 +31,7 @@ def cut_polygons(geojson_path, tiff_path, output_dir="output_polygons"):
         print("Number of bands (color channels):", src.count)
         print("Width x Height:", src.width, "x", src.height)
         print("CRS:", src.crs)
+        print(src.indexes)
         for i, row in gdf.iterrows():
             geom = row.geometry
             if geom is None:
@@ -40,7 +41,6 @@ def cut_polygons(geojson_path, tiff_path, output_dir="output_polygons"):
             out_image, out_transform = mask(src, [mapping(geom)], crop=True)
             out_image = out_image.transpose(1, 2, 0)  # (bands, h, w) -> (h, w, bands)
 
-            print('!!! ', out_image.shape)
 
             # Remove nodata pixels (set transparent)
             mask_array = out_image.sum(axis=-1) == 0
