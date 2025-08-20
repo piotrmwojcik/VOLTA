@@ -31,6 +31,7 @@ def cut_polygons(geojson_path, tiff_path, output_dir="output_polygons"):
         print("Number of bands (color channels):", src.count)
         print("Width x Height:", src.width, "x", src.height)
         print("CRS:", src.crs)
+        print("Subdatasets:", src.subdatasets)
         print(src.indexes)
         for i, row in gdf.iterrows():
             geom = row.geometry
