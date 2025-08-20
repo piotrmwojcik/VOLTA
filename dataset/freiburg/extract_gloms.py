@@ -1,26 +1,31 @@
 #!/usr/bin/env python3
-import json, re, hashlib
+import json, re, hashlib, warnings
 from pathlib import Path
+
 import numpy as np
+import geopandas as gpd
+from PIL import Image, ImageDraw
+from shapely.geometry import box
+from shapely.affinity import translate
+
 import rasterio
+from rasterio.errors import NotGeoreferencedWarning
 from rasterio.windows import from_bounds, Window
 from rasterio.features import rasterize
 from rasterio.enums import MergeAlg
 from affine import Affine
-import geopandas as gpd
-from shapely.geometry import box
-from shapely.affinity import translate
-from PIL import Image, ImageDraw, ImageFont
+import torch
+import torch.nn.functional as F  # not strictly needed, but handy if you extend
 
+# Silence "NotGeoreferencedWarning" when working in pixel space
+warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
 
 # ----------------- helpers -----------------
 def extract_annotation_name(value):
     """
     Return the annotation name string from a 'classification' field.
-    Accepts:
-      - dict like {'name': 'Podocyte', ...}
-      - plain string ('Podocyte')
-      - None/NaN -> ''  (treated as a real class)
+    Accepts dicts (with keys name/displayName/label), plain strings,
+    and treats None/NaN as '' (empty class).
     """
     if value is None:
         return ""
@@ -34,61 +39,57 @@ def extract_annotation_name(value):
         return str(name).strip()
     return str(value).strip()
 
-
 def stable_rgb(label_str: str):
     """Deterministic RGB color for a given label string (including empty)."""
     h = hashlib.md5(label_str.encode("utf-8")).digest()
     return (h[0], h[1], h[2])
 
-
 def pretty_label(lab: str):
     return lab if lab != "" else "<empty>"
 
+def sort_gtiff_dirs(slist):
+    def dir_index(s):
+        m = re.search(r"GTIFF_DIR:(\d+):", s)
+        return int(m.group(1)) if m else 0
+    return sorted(slist, key=dir_index)
 
 # ----------------- core function -----------------
 def cut_rectangles_multich_with_overlay(
-    geojson_path,                # ROI polygons (glomeruli)
-    cells_geojson_path,          # cells polygons (with 'classification' column)
-    ome_tiff_path,               # OME-TIFF path with GTIFF_DIR subdatasets
-    output_dir,                  # where to write PNGs
-    prefix=None,                 # filename prefix (defaults to TIFF stem)
-    overlay_alpha=128,           # 0..255 transparency for class overlay
-    label_to_id=None,            # GLOBAL mapping label->id (required for single legend)
-    label_to_rgb=None            # GLOBAL mapping label->RGB (same across all images)
+    dataset_tag,                # 'old' or 'new' (used for subfolder)
+    case_stem,                  # stem of the case (e.g., A_hNiere_S3)
+    geojson_path,               # ROI polygons (glomeruli)
+    cells_geojson_path,         # cells polygons (with 'classification')
+    ome_tiff_path,              # OME-TIFF path with GTIFF_DIR subdatasets
+    out_root,                   # root output dir
+    label_to_id,                # GLOBAL mapping (mutable dict)
+    label_to_rgb,               # GLOBAL colors (mutable dict)
+    overlay_alpha=128
 ):
-    assert label_to_id is not None and label_to_rgb is not None, "Pass global label mappings"
-    out_dir = Path(output_dir)
+    out_dir = Path(out_root) / dataset_tag / case_stem
     out_dir.mkdir(parents=True, exist_ok=True)
-    if prefix is None:
-        prefix = Path(ome_tiff_path).stem
+    prefix = Path(ome_tiff_path).stem
 
-    # Load ROI & cells
+    # Load ROIs & cells
     gdf = gpd.read_file(geojson_path)
     cells_gdf = gpd.read_file(cells_geojson_path)
 
     if "classification" not in cells_gdf.columns:
-        raise RuntimeError(
-            f"'classification' column not found in {cells_geojson_path}. "
-            f"Columns: {list(cells_gdf.columns)}"
-        )
+        print(f"[WARN] 'classification' column not found in {cells_geojson_path}; skipping cells overlay.")
+        cells_gdf = cells_gdf.assign(_label="")  # all empty class
+    else:
+        cells_gdf = cells_gdf.assign(_label=cells_gdf["classification"].map(extract_annotation_name))
 
-    # Derive annotation name; keep empty names as their own class ('')
-    cells_gdf = cells_gdf.assign(_label=cells_gdf["classification"].map(extract_annotation_name))
-
-    # Open subdatasets (channels)
+    # Subdatasets (channels)
     with rasterio.open(ome_tiff_path) as src0:
         subdatasets = src0.subdatasets
         if not subdatasets:
             raise RuntimeError(f"No subdatasets found in {ome_tiff_path}. Is this an OME-TIFF?")
-    def dir_index(s):
-        m = re.search(r"GTIFF_DIR:(\d+):", s)
-        return int(m.group(1)) if m else 0
-    subdatasets = sorted(subdatasets, key=dir_index)
+    subdatasets = sort_gtiff_dirs(subdatasets)
     datasets = [rasterio.open(sref) for sref in subdatasets]
 
     try:
         first = datasets[0]
-        print(f"\nProcessing image: {ome_tiff_path}")
+        print(f"\n[{dataset_tag}] Processing {case_stem}")
         print("  Channels (subdatasets):", len(datasets))
         print("  CRS (first sds):", first.crs)
 
@@ -104,7 +105,6 @@ def cut_rectangles_multich_with_overlay(
                 cells_gdf = cells_gdf.to_crs(first.crs)
                 print(f"  Reprojected Cells GeoJSON to {first.crs}")
 
-        # Spatial index for cells
         cells_sindex = cells_gdf.sindex if not cells_gdf.empty else None
 
         for i, row in gdf.iterrows():
@@ -123,13 +123,13 @@ def cut_rectangles_multich_with_overlay(
                 if geo_mode:
                     win = from_bounds(minx, miny, maxx, maxy, transform=ds.transform)
                 else:
+                    # treat ROI bounds as pixel coords (x=col, y=row)
                     col_off = int(max(0, np.floor(minx)))
                     row_off = int(max(0, np.floor(miny)))
                     width   = int(max(0, np.ceil(maxx - minx)))
                     height  = int(max(0, np.ceil(maxy - miny)))
                     win = Window(col_off=col_off, row_off=row_off, width=width, height=height)
 
-                # clip & int
                 win = win.intersection(Window(0, 0, ds.width, ds.height))
                 win = Window(int(win.col_off), int(win.row_off), int(win.width), int(win.height))
                 if win.width == 0 or win.height == 0:
@@ -139,7 +139,7 @@ def cut_rectangles_multich_with_overlay(
 
                 arr = ds.read(window=win)  # (bands, H, W) — usually (1, H, W)
                 if used_transform is None:
-                    # Avoid georeferencing warnings in pixel mode
+                    # avoid georef warnings in pixel mode
                     used_transform = ds.window_transform(win) if geo_mode else Affine.identity()
                     target_shape = arr.shape[1:]
                     win_for_cells = win
@@ -172,7 +172,6 @@ def cut_rectangles_multich_with_overlay(
 
             if cells_sindex is not None:
                 if geo_mode:
-                    # Candidate cells by bbox, keep those intersecting glomerulus
                     cand_idx = list(cells_sindex.intersection(glom_geom.bounds))
                     if cand_idx:
                         cand = cells_gdf.iloc[cand_idx]
@@ -185,7 +184,7 @@ def cut_rectangles_multich_with_overlay(
                             if gi.is_empty:
                                 continue
                             if lab not in label_to_id:
-                                # Unknown label (not seen globally) -> add as new id on the fly
+                                # unseen label → extend global map
                                 new_id = max(label_to_id.values(), default=0) + 1
                                 label_to_id[lab] = new_id
                                 label_to_rgb[lab] = stable_rgb(lab)
@@ -198,10 +197,9 @@ def cut_rectangles_multich_with_overlay(
                                 fill=0,
                                 default_value=0,
                                 dtype="int32",
-                                merge_alg=MergeAlg.replace  # last wins on overlaps
+                                merge_alg=MergeAlg.replace
                             )
                 else:
-                    # Pixel mode: translate polygons into crop-local px coords
                     col0, row0 = int(win_for_cells.col_off), int(win_for_cells.row_off)
                     glom_shifted = translate(glom_geom, xoff=-col0, yoff=-row0).intersection(box(0, 0, W, H))
                     if not glom_shifted.is_empty:
@@ -233,7 +231,7 @@ def cut_rectangles_multich_with_overlay(
                                     merge_alg=MergeAlg.replace
                                 )
 
-            # Build colored overlay from label_raster (global colors)
+            # Build colored overlay from label_raster (GLOBAL colors)
             overlay_rgba = np.zeros((H, W, 4), dtype=np.uint8)
             for lab, val in label_to_id.items():
                 m = (label_raster == val)
@@ -259,20 +257,34 @@ def cut_rectangles_multich_with_overlay(
         for ds in datasets:
             ds.close()
 
-
-# ----------------- batch runner with GLOBAL legend -----------------
+# ----------------- batch runner (COMBINES BOTH DATASETS) -----------------
 if __name__ == "__main__":
-    # Paths
-    labels_dir = Path("/data/pwojcik/For_Piotr/Labels/glom_labels")   # ROI polygons (one .geojson per case)
-    cells_dir  = Path("/data/pwojcik/For_Piotr/Labels/cells_labels")   # cells polygons (with 'classification')
-    images_dir = Path("/data/pwojcik/For_Piotr/Images")               # OME-TIFFs
-    out_root   = Path("/data/pwojcik/For_Piotr/gloms_rect")           # output root
+    # Output root (shared)
+    out_root = Path("/data/pwojcik/For_Piotr/gloms_rect")
     out_root.mkdir(parents=True, exist_ok=True)
+
+    # Dataset groups: (tag, labels_dir, cells_dir, images_dir)
+    datasets_cfg = [
+        # Original dataset
+        (
+            "old",
+            Path("/data/pwojcik/For_Piotr/Labels/glom_labels"),
+            Path("/data/pwojcik/For_Piotr/Labels/cells_labels"),
+            Path("/data/pwojcik/For_Piotr/Images"),
+        ),
+        # NEW dataset you asked to add
+        (
+            "new",
+            Path("/data/pwojcik/For_Piotr/new_images/ROIs_geojson"),
+            Path("/data/pwojcik/For_Piotr/new_labels/cells_labels_geojson"),
+            Path("/data/pwojcik/For_Piotr/new_images"),
+        ),
+    ]
 
     # Allowed image extensions in order of preference
     exts = [".ome.tiff", ".ome.tif", ".tif", ".tiff"]
 
-    def find_image_for(stem: str) -> Path:
+    def find_image_for(stem: str, images_dir: Path) -> Path:
         for ext in exts:
             cand = images_dir / f"{stem}{ext}"
             if cand.exists():
@@ -283,7 +295,7 @@ if __name__ == "__main__":
                     return p
         return None
 
-    def find_cells_for(stem: str) -> Path:
+    def find_cells_for(stem: str, cells_dir: Path) -> Path:
         cand = cells_dir / f"{stem}.geojson"
         if cand.exists():
             return cand
@@ -292,41 +304,45 @@ if __name__ == "__main__":
                 return p
         return None
 
-    # Build list of matching cases
-    roi_geojsons = sorted(labels_dir.glob("*.geojson"))
+    # Build list of (dataset_tag, stem, roi_geojson, image, cells)
     pairs = []
-    for gj in roi_geojsons:
-        stem = gj.stem
-        img = find_image_for(stem)
-        cells = find_cells_for(stem)
-        if img is None or cells is None:
-            print(f"[SKIP] Missing image or cells for {stem}")
-            continue
-        pairs.append((stem, gj, img, cells))
+    for tag, labels_dir, cells_dir, images_dir in datasets_cfg:
+        roi_geojsons = sorted(labels_dir.glob("*.geojson"))
+        for gj in roi_geojsons:
+            stem = gj.stem
+            img = find_image_for(stem, images_dir)
+            cells = find_cells_for(stem, cells_dir)
+            if img is None or cells is None:
+                print(f"[SKIP {tag}] Missing image or cells for {stem}")
+                continue
+            pairs.append((tag, stem, gj, img, cells))
+
     if not pairs:
-        print("No matching (ROI, image, cells) triplets found.")
+        print("No matching (ROI, image, cells) triplets found across datasets.")
         raise SystemExit(1)
 
-    # ---------- FIRST PASS: collect ALL labels across all cases ----------
+    # ---------- FIRST PASS: collect ALL labels globally ----------
     global_labels = set()
-    for stem, gj, img, cells in pairs:
+    for tag, stem, gj, img, cells in pairs:
         cells_gdf = gpd.read_file(cells)
         if "classification" not in cells_gdf.columns:
-            print(f"[WARN] 'classification' column missing in {cells}; skipping label collection for this file.")
+            # still include empty class if there are any cells
+            if not cells_gdf.empty:
+                global_labels.add("")
             continue
         labs = cells_gdf["classification"].map(extract_annotation_name)
         for lab in labs:
             global_labels.add("" if lab is None else str(lab))
 
-    # Build GLOBAL mappings (sorted for stability)
     global_labels = sorted(global_labels)
     label_to_id  = {lab: i + 1 for i, lab in enumerate(global_labels)}  # 0 = background
     label_to_rgb = {lab: stable_rgb(lab) for lab in global_labels}
     print("Global labels:", [pretty_label(l) for l in global_labels])
 
-    # Save a SINGLE legend for all images
-    legend_png = out_root / "legend_all_classes.png"
+    # Save a SINGLE legend + JSON right now
+    legend_png  = out_root / "legend_all_classes.png"
     legend_json = out_root / "label_map.json"
+
     try:
         sw, pad = 18, 8
         H_leg = pad*2 + (len(global_labels)+1)*sw
@@ -359,26 +375,52 @@ if __name__ == "__main__":
         print(f"[WARN] Could not save global legend: {e}")
 
     # ---------- SECOND PASS: process all cases using GLOBAL mappings ----------
-    for stem, gj, img, cells in pairs:
-        out_dir = out_root / stem
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        print(f"\n=== Processing: {stem} ===")
-        print(f"ROI GeoJSON:   {gj}")
-        print(f"Cells GeoJSON: {cells}")
-        print(f"Image:         {img}")
-        print(f"Output:        {out_dir}")
-
+    mapping_len_before = len(label_to_id)
+    for tag, stem, gj, img, cells in pairs:
         try:
             cut_rectangles_multich_with_overlay(
+                dataset_tag=tag,
+                case_stem=stem,
                 geojson_path=str(gj),
                 cells_geojson_path=str(cells),
                 ome_tiff_path=str(img),
-                output_dir=str(out_dir),
-                prefix=img.stem,                 # name crops after original image
-                overlay_alpha=128,               # semi-transparent
-                label_to_id=label_to_id,         # GLOBAL mapping
-                label_to_rgb=label_to_rgb        # GLOBAL colors
+                out_root=str(out_root),
+                label_to_id=label_to_id,     # GLOBAL (mutable) mapping
+                label_to_rgb=label_to_rgb,   # GLOBAL (mutable) colors
+                overlay_alpha=128
             )
         except Exception as e:
-            print(f"[ERROR] {stem}: {e}")
+            print(f"[ERROR {tag}] {stem}: {e}")
+
+    # If new labels appeared mid-run, refresh legend to include them
+    if len(label_to_id) != mapping_len_before:
+        global_labels = sorted(label_to_id.keys())
+        try:
+            sw, pad = 18, 8
+            H_leg = pad*2 + (len(global_labels)+1)*sw
+            W_leg = 640
+            leg = Image.new("RGB", (W_leg, H_leg), (255, 255, 255))
+            drw = ImageDraw.Draw(leg)
+            y = pad
+            drw.text((pad, y), "Legend (annotation name → color)", fill=(0,0,0))
+            y += sw
+            for lab in global_labels:
+                color = label_to_rgb[lab]
+                drw.rectangle([pad, y, pad+sw, y+sw], fill=color)
+                drw.text((pad+sw+8, y+2), pretty_label(lab), fill=(0,0,0))
+                y += sw
+            leg.save(legend_png)
+            with open(legend_json, "w") as f:
+                json.dump(
+                    {
+                        "labels": global_labels,
+                        "label_to_id": label_to_id,
+                        "label_to_rgb": {k: list(v) for k, v in label_to_rgb.items()},
+                        "note": "0 = background; colors are deterministic per label"
+                    },
+                    f,
+                    indent=2
+                )
+            print(f"[LEGEND] Updated global legend with newly seen labels.")
+        except Exception as e:
+            print(f"[WARN] Could not update legend: {e}")
