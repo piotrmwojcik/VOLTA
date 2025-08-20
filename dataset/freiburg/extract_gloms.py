@@ -46,6 +46,7 @@ def cut_polygons(geojson_path, tiff_path, output_dir="output_polygons"):
                 out_image = ((out_image - out_image.min()) / (out_image.max() - out_image.min()) * 255).astype(np.uint8)
 
             # Save as PNG
+            print(out_image.shape)
             out_img_pil = Image.fromarray(out_image)
             save_path = os.path.join(output_dir, f"polygon_{i}.png")
             out_img_pil.save(save_path)
