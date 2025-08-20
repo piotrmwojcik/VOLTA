@@ -3,21 +3,22 @@ import re
 from pathlib import Path
 import numpy as np
 import rasterio
-from rasterio.mask import mask
+from rasterio.windows import from_bounds, Window
 import geopandas as gpd
-from shapely.geometry import mapping
+from shapely.geometry import mapping  # not strictly needed now, but fine to keep
 from PIL import Image
 
-def cut_polygons_multich(geojson_path, ome_tiff_path, output_dir="output_polygons"):
+def cut_rectangles_multich(geojson_path, ome_tiff_path, output_dir="output_rects"):
     """
-    Crop ALL subdatasets (channels) from an OME-TIFF by polygons and save:
-      - <name>.tif  (multi-band GeoTIFF with all channels)
-      - <name>.png  (RGB preview from first 3 channels, if present)
+    For each polygon in GeoJSON, take its bounding box (rectangular window),
+    crop ALL subdatasets (channels) from the OME-TIFF to that window, and save:
+      - polygon_XXXX.tif  (multi-band GeoTIFF with all channels)
+      - polygon_XXXX.png  (RGB preview from first 3 channels, if present)
     """
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load polygons (expects polygon or multipolygon geometries)
+    # Load polygons (expects polygon or multipolygon geometries in same CRS as the image)
     gdf = gpd.read_file(geojson_path)
 
     # Enumerate & sort subdatasets by GTIFF_DIR index
@@ -30,40 +31,63 @@ def cut_polygons_multich(geojson_path, ome_tiff_path, output_dir="output_polygon
         return int(m.group(1)) if m else 0
     sds = sorted(sds, key=_dir_index)
 
-    # Open all subdatasets (lazy context manager)
+    # Open all subdatasets
     datasets = [rasterio.open(sref) for sref in sds]
 
     try:
-        # Basic info
         print("Subdatasets:", len(datasets))
-        print("Sizes (w x h) per subdataset:", [(ds.width, ds.height) for ds in datasets])
-        print("CRS (from first sds):", datasets[0].crs)
+        print("CRS (first sds):", datasets[0].crs)
+        print("Sizes (w x h):", [(ds.width, ds.height) for ds in datasets])
 
         for i, row in gdf.iterrows():
             geom = row.geometry
             if geom is None or geom.is_empty:
                 continue
 
-            # Crop each subdataset to the polygon (returns (bands, h, w))
+            # 1) Bounding box of the polygon
+            minx, miny, maxx, maxy = geom.bounds
+
             cropped_list = []
             used_transform = None
+            target_shape = None
+
             for ds in datasets:
-                out_img, out_transform = mask(
-                    ds, [mapping(geom)], crop=True, filled=True, nodata=0
+                # 2) Convert bounds -> pixel window (clipped to raster extent)
+                #    If there's no CRS/transform, this assumes geometries are already in pixel coords.
+                win = from_bounds(minx, miny, maxx, maxy, transform=ds.transform)
+
+                # Clip to dataset bounds and round to integers
+                win = win.intersection(Window(0, 0, ds.width, ds.height))
+                win = Window(
+                    col_off=int(max(0, np.floor(win.col_off))),
+                    row_off=int(max(0, np.floor(win.row_off))),
+                    width=int(max(0, np.ceil(win.width))),
+                    height=int(max(0, np.ceil(win.height))),
                 )
+                if win.width == 0 or win.height == 0:
+                    print(f"Polygon {i}: window out of bounds, skipping.")
+                    cropped_list = []
+                    break
+
+                # 3) Read the rectangular window (no mask)
+                out_img = ds.read(window=win)  # shape: (bands, h, w)
+
                 if used_transform is None:
-                    used_transform = out_transform
+                    used_transform = ds.window_transform(win)
                     target_shape = out_img.shape[1:]  # (h, w)
                 else:
-                    # Safety: enforce identical sizes (OME subdatasets should match)
                     if out_img.shape[1:] != target_shape:
                         raise RuntimeError(
-                            f"Mismatch in crop sizes between subdatasets: "
+                            f"Mismatch in crop sizes between subdatasets for polygon {i}: "
                             f"{out_img.shape[1:]} vs {target_shape}"
                         )
-                cropped_list.append(out_img)  # may be (1,h,w) or (B,h,w)
 
-            # Stack ALL bands across subdatasets -> (B_total, h, w)
+                cropped_list.append(out_img)
+
+            if not cropped_list:
+                continue
+
+            # 4) Stack ALL bands across subdatasets -> (B_total, H, W)
             stacked = np.concatenate(cropped_list, axis=0)
             B, H, W = stacked.shape
             print(f"Polygon {i}: stacked bands={B}, size={W}x{H}")
@@ -76,39 +100,30 @@ def cut_polygons_multich(geojson_path, ome_tiff_path, output_dir="output_polygon
                 "width": W,
                 "count": B,
                 "transform": used_transform,
-                "crs": datasets[0].crs,   # often None for OME; keep as-is
-                # You can add compression if desired:
+                "crs": datasets[0].crs,  # often None for OME; keep as-is
+                # Optional compression:
                 # "compress": "deflate", "predictor": 2
             })
             tif_path = out_dir / f"polygon_{i:04d}.tif"
             with rasterio.open(tif_path, "w", **profile) as dst:
                 dst.write(stacked)
 
-            # ----- Save RGB preview PNG (first 3 bands, scaled per-band) -----
+            # ----- Save RGB preview PNG (first 3 bands, per-band min-max scaling) -----
             png_path = out_dir / f"polygon_{i:04d}.png"
             if B >= 3:
                 rgb = stacked[:3].astype(np.float32)  # (3, H, W)
-                # Per-band min-max to 0..255 (avoid div-by-zero)
                 for c in range(3):
                     band = rgb[c]
                     mn, mx = float(band.min()), float(band.max())
-                    if mx > mn:
-                        band = (band - mn) / (mx - mn)
-                    else:
-                        band = np.zeros_like(band)
-                    rgb[c] = band
+                    rgb[c] = (band - mn) / (mx - mn) if mx > mn else 0.0
                 rgb = (rgb * 255.0).clip(0, 255).astype(np.uint8)
                 rgb = np.transpose(rgb, (1, 2, 0))  # -> (H, W, 3)
                 Image.fromarray(rgb, mode="RGB").save(png_path)
             else:
-                # Single-band preview: normalize to 8-bit grayscale
                 band = stacked[0].astype(np.float32)
                 mn, mx = float(band.min()), float(band.max())
-                if mx > mn:
-                    band = (band - mn) / (mx - mn)
-                else:
-                    band = np.zeros_like(band)
-                gray = (band * 255.0).clip(0, 255).astype(np.uint8)
+                gray = ((band - mn) / (mx - mn) if mx > mn else np.zeros_like(band))
+                gray = (gray * 255.0).clip(0, 255).astype(np.uint8)
                 Image.fromarray(gray, mode="L").save(png_path)
 
             print(f"Saved: {tif_path} (all {B} bands) and {png_path} (preview)")
@@ -118,8 +133,8 @@ def cut_polygons_multich(geojson_path, ome_tiff_path, output_dir="output_polygon
             ds.close()
 
 # --- Example call ---
-cut_polygons_multich(
+cut_rectangles_multich(
     "/data/pwojcik/For_Piotr/Labels/glom_labels/A_hNiere_S3.geojson",
     "/data/pwojcik/For_Piotr/Images/A_hNiere_S3.ome.tiff",
-    output_dir="/data/pwojcik/For_Piotr/gloms"
+    output_dir="/data/pwojcik/For_Piotr/gloms_rect"
 )
