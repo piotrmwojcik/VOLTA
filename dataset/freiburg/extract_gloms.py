@@ -14,8 +14,6 @@ from rasterio.windows import from_bounds, Window
 from rasterio.features import rasterize
 from rasterio.enums import MergeAlg
 from affine import Affine
-import torch
-import torch.nn.functional as F  # not strictly needed, but handy if you extend
 
 # Silence "NotGeoreferencedWarning" when working in pixel space
 warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
