@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import re, hashlib
+import json, re, hashlib
 from pathlib import Path
 import numpy as np
 import rasterio
@@ -10,7 +10,7 @@ from affine import Affine
 import geopandas as gpd
 from shapely.geometry import box
 from shapely.affinity import translate
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 
 # ----------------- helpers -----------------
@@ -52,8 +52,11 @@ def cut_rectangles_multich_with_overlay(
     ome_tiff_path,               # OME-TIFF path with GTIFF_DIR subdatasets
     output_dir,                  # where to write PNGs
     prefix=None,                 # filename prefix (defaults to TIFF stem)
-    overlay_alpha=128            # 0..255 transparency for class overlay
+    overlay_alpha=128,           # 0..255 transparency for class overlay
+    label_to_id=None,            # GLOBAL mapping label->id (required for single legend)
+    label_to_rgb=None            # GLOBAL mapping label->RGB (same across all images)
 ):
+    assert label_to_id is not None and label_to_rgb is not None, "Pass global label mappings"
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     if prefix is None:
@@ -71,11 +74,6 @@ def cut_rectangles_multich_with_overlay(
 
     # Derive annotation name; keep empty names as their own class ('')
     cells_gdf = cells_gdf.assign(_label=cells_gdf["classification"].map(extract_annotation_name))
-
-    # Build label maps (for consistent colors within this case)
-    all_labels = sorted(map(str, cells_gdf["_label"].unique()))
-    label_to_id = {lab: i + 1 for i, lab in enumerate(all_labels)}   # 0 = background
-    print("  Label map:", {pretty_label(k): v for k, v in label_to_id.items()})
 
     # Open subdatasets (channels)
     with rasterio.open(ome_tiff_path) as src0:
@@ -141,7 +139,8 @@ def cut_rectangles_multich_with_overlay(
 
                 arr = ds.read(window=win)  # (bands, H, W) — usually (1, H, W)
                 if used_transform is None:
-                    used_transform = ds.window_transform(win)
+                    # Avoid georeferencing warnings in pixel mode
+                    used_transform = ds.window_transform(win) if geo_mode else Affine.identity()
                     target_shape = arr.shape[1:]
                     win_for_cells = win
                 else:
@@ -185,6 +184,11 @@ def cut_rectangles_multich_with_overlay(
                             gi = g.intersection(glom_geom)
                             if gi.is_empty:
                                 continue
+                            if lab not in label_to_id:
+                                # Unknown label (not seen globally) -> add as new id on the fly
+                                new_id = max(label_to_id.values(), default=0) + 1
+                                label_to_id[lab] = new_id
+                                label_to_rgb[lab] = stable_rgb(lab)
                             shapes.append((gi, label_to_id[lab]))
                         if shapes:
                             label_raster = rasterize(
@@ -213,6 +217,10 @@ def cut_rectangles_multich_with_overlay(
                                 gi = g2.intersection(glom_shifted)
                                 if gi.is_empty:
                                     continue
+                                if lab not in label_to_id:
+                                    new_id = max(label_to_id.values(), default=0) + 1
+                                    label_to_id[lab] = new_id
+                                    label_to_rgb[lab] = stable_rgb(lab)
                                 shapes.append((gi, label_to_id[lab]))
                             if shapes:
                                 label_raster = rasterize(
@@ -225,13 +233,13 @@ def cut_rectangles_multich_with_overlay(
                                     merge_alg=MergeAlg.replace
                                 )
 
-            # Build colored overlay from label_raster
+            # Build colored overlay from label_raster (global colors)
             overlay_rgba = np.zeros((H, W, 4), dtype=np.uint8)
             for lab, val in label_to_id.items():
                 m = (label_raster == val)
                 if not np.any(m):
                     continue
-                r, g, b = stable_rgb(lab)
+                r, g, b = label_to_rgb[lab]
                 overlay_rgba[m, 0] = r
                 overlay_rgba[m, 1] = g
                 overlay_rgba[m, 2] = b
@@ -247,37 +255,19 @@ def cut_rectangles_multich_with_overlay(
             out_overlay.convert("RGB").save(overlay_png)
             print(f"  Saved: {crop_png} and {overlay_png}")
 
-            # Optional tiny legend per ROI
-            try:
-                sw, pad = 18, 6
-                H_leg = pad*2 + (len(label_to_id)+1)*sw
-                W_leg = 500
-                leg = Image.new("RGB", (W_leg, H_leg), (255, 255, 255))
-                drw = ImageDraw.Draw(leg)
-                y = pad
-                drw.text((pad, y), "Legend (annotation name → color)", fill=(0, 0, 0))
-                y += sw
-                for lab in sorted(label_to_id.keys()):
-                    color = stable_rgb(lab)
-                    drw.rectangle([pad, y, pad+sw, y+sw], fill=color)
-                    drw.text((pad+sw+8, y+2), pretty_label(lab), fill=(0, 0, 0))
-                    y += sw
-                leg.save(out_dir / f"{prefix}_polygon_{i:04d}_legend.png")
-            except Exception:
-                pass
-
     finally:
         for ds in datasets:
             ds.close()
 
 
-# ----------------- batch runner with paths -----------------
+# ----------------- batch runner with GLOBAL legend -----------------
 if __name__ == "__main__":
     # Paths
     labels_dir = Path("/data/pwojcik/For_Piotr/Labels/glom_labels")   # ROI polygons (one .geojson per case)
     cells_dir  = Path("/data/pwojcik/For_Piotr/Labels/cells_labels")   # cells polygons (with 'classification')
     images_dir = Path("/data/pwojcik/For_Piotr/Images")               # OME-TIFFs
     out_root   = Path("/data/pwojcik/For_Piotr/gloms_rect")           # output root
+    out_root.mkdir(parents=True, exist_ok=True)
 
     # Allowed image extensions in order of preference
     exts = [".ome.tiff", ".ome.tif", ".tif", ".tiff"]
@@ -302,23 +292,74 @@ if __name__ == "__main__":
                 return p
         return None
 
-    geojsons = sorted(labels_dir.glob("*.geojson"))
-    if not geojsons:
-        print(f"No .geojson files found in {labels_dir}")
-        raise SystemExit(1)
-
-    for gj in geojsons:
+    # Build list of matching cases
+    roi_geojsons = sorted(labels_dir.glob("*.geojson"))
+    pairs = []
+    for gj in roi_geojsons:
         stem = gj.stem
         img = find_image_for(stem)
         cells = find_cells_for(stem)
-
-        if img is None:
-            print(f"[SKIP] No matching image for {stem}")
+        if img is None or cells is None:
+            print(f"[SKIP] Missing image or cells for {stem}")
             continue
-        if cells is None:
-            print(f"[SKIP] No matching cells GeoJSON for {stem}")
-            continue
+        pairs.append((stem, gj, img, cells))
+    if not pairs:
+        print("No matching (ROI, image, cells) triplets found.")
+        raise SystemExit(1)
 
+    # ---------- FIRST PASS: collect ALL labels across all cases ----------
+    global_labels = set()
+    for stem, gj, img, cells in pairs:
+        cells_gdf = gpd.read_file(cells)
+        if "classification" not in cells_gdf.columns:
+            print(f"[WARN] 'classification' column missing in {cells}; skipping label collection for this file.")
+            continue
+        labs = cells_gdf["classification"].map(extract_annotation_name)
+        for lab in labs:
+            global_labels.add("" if lab is None else str(lab))
+
+    # Build GLOBAL mappings (sorted for stability)
+    global_labels = sorted(global_labels)
+    label_to_id  = {lab: i + 1 for i, lab in enumerate(global_labels)}  # 0 = background
+    label_to_rgb = {lab: stable_rgb(lab) for lab in global_labels}
+    print("Global labels:", [pretty_label(l) for l in global_labels])
+
+    # Save a SINGLE legend for all images
+    legend_png = out_root / "legend_all_classes.png"
+    legend_json = out_root / "label_map.json"
+    try:
+        sw, pad = 18, 8
+        H_leg = pad*2 + (len(global_labels)+1)*sw
+        W_leg = 640
+        leg = Image.new("RGB", (W_leg, H_leg), (255, 255, 255))
+        drw = ImageDraw.Draw(leg)
+        y = pad
+        drw.text((pad, y), "Legend (annotation name → color)", fill=(0,0,0))
+        y += sw
+        for lab in global_labels:
+            color = label_to_rgb[lab]
+            drw.rectangle([pad, y, pad+sw, y+sw], fill=color)
+            drw.text((pad+sw+8, y+2), pretty_label(lab), fill=(0,0,0))
+            y += sw
+        leg.save(legend_png)
+        with open(legend_json, "w") as f:
+            json.dump(
+                {
+                    "labels": global_labels,
+                    "label_to_id": label_to_id,
+                    "label_to_rgb": {k: list(v) for k, v in label_to_rgb.items()},
+                    "note": "0 = background; colors are deterministic per label"
+                },
+                f,
+                indent=2
+            )
+        print(f"[LEGEND] Saved global legend: {legend_png}")
+        print(f"[LEGEND] Saved mapping JSON: {legend_json}")
+    except Exception as e:
+        print(f"[WARN] Could not save global legend: {e}")
+
+    # ---------- SECOND PASS: process all cases using GLOBAL mappings ----------
+    for stem, gj, img, cells in pairs:
         out_dir = out_root / stem
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -334,8 +375,10 @@ if __name__ == "__main__":
                 cells_geojson_path=str(cells),
                 ome_tiff_path=str(img),
                 output_dir=str(out_dir),
-                prefix=img.stem,     # name crops after original image
-                overlay_alpha=128    # semi-transparent
+                prefix=img.stem,                 # name crops after original image
+                overlay_alpha=128,               # semi-transparent
+                label_to_id=label_to_id,         # GLOBAL mapping
+                label_to_rgb=label_to_rgb        # GLOBAL colors
             )
         except Exception as e:
             print(f"[ERROR] {stem}: {e}")
