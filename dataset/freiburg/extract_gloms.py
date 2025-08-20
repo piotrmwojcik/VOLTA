@@ -11,31 +11,62 @@ from shapely.geometry import box
 from shapely.affinity import translate
 from PIL import Image
 
-
+# ---------- NEW helpers ----------
 def _pick_label_field(gdf, explicit=None):
+    """
+    Choose which column holds the cell labels.
+    Supports common names + 'classification' used by QuPath.
+    """
     if explicit and explicit in gdf.columns:
         return explicit
-    candidates = ["label", "type", "class", "cell_type", "category", "phenotype", "name", "Name"]
+    candidates = [
+        "classification", "label", "type", "class", "cell_type",
+        "category", "phenotype", "name", "Name", "objectType"
+    ]
     for c in candidates:
         if c in gdf.columns:
             return c
     raise RuntimeError(f"No cell label column found. Available columns: {list(gdf.columns)}. "
                        f"Pass cell_label_field=...")
 
+def _extract_label(value):
+    """
+    Turn a label field value (which may be a dict like {'name': 'Podocyte'})
+    into a plain string label. Returns None if missing/invalid.
+    """
+    if value is None:
+        return None
+    # handle NaN
+    try:
+        if isinstance(value, float) and np.isnan(value):
+            return None
+    except Exception:
+        pass
+    # dict-like (common in QuPath: classification = {'name': 'X', ...})
+    if isinstance(value, dict):
+        for key in ("name", "displayName", "label"):
+            if key in value and value[key] not in (None, ""):
+                return str(value[key])
+        # fallback to str of dict
+        return str(value)
+    # plain string / int / etc.
+    s = str(value).strip()
+    return s if s else None
+
 def _stable_rgb(label):
-    # Deterministic color from label string
+    """Deterministic RGB from label string (stable across runs)."""
     h = hashlib.md5(str(label).encode("utf-8")).digest()
-    return (h[0], h[1], h[2])  # RGB 0..255
+    return (h[0], h[1], h[2])
 
-
+# ---------- REPLACE your function with this version ----------
 def cut_rectangles_multich_with_overlay(
-    geojson_path,                 # ROI polygons (glomeruli)
-    cells_geojson_path,           # cell polygons (segmented cells) WITH labels
-    ome_tiff_path,                # OME-TIFF with subdatasets
-    output_dir,                   # where to save PNGs
-    prefix=None,                  # filename prefix (defaults to TIFF stem)
-    overlay_alpha=128,            # 0..255 transparency for the mask
-    cell_label_field=None         # set explicit label column name if needed
+    geojson_path,                # ROI polygons (glomeruli)
+    cells_geojson_path,          # cell polygons (segmented cells) WITH labels
+    ome_tiff_path,               # OME-TIFF with subdatasets
+    output_dir,                  # where to save PNGs
+    prefix=None,                 # filename prefix (defaults to TIFF stem)
+    overlay_alpha=128,           # 0..255 transparency for the mask
+    cell_label_field=None        # set explicit label column name if needed
 ):
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -45,7 +76,18 @@ def cut_rectangles_multich_with_overlay(
     # Load ROI (gloms) & cell polygons
     gdf = gpd.read_file(geojson_path)
     cells_gdf = gpd.read_file(cells_geojson_path)
+
+    # Pick label column & build mapping
     label_col = _pick_label_field(cells_gdf, cell_label_field)
+    derived_labels = [ _extract_label(v) for v in cells_gdf[label_col] ]
+    cells_gdf = cells_gdf.assign(_label=derived_labels)
+    # keep only rows with a usable label
+    cells_gdf = cells_gdf[cells_gdf["_label"].notna()]
+
+    all_labels = sorted(map(str, cells_gdf["_label"].dropna().unique()))
+    label_to_id = {lab: i+1 for i, lab in enumerate(all_labels)}  # 0 = background
+    label_to_rgb = {lab: _stable_rgb(lab) for lab in all_labels}
+    print("  Label map:", label_to_id)
 
     # Get & sort subdatasets (one per channel)
     with rasterio.open(ome_tiff_path) as src0:
@@ -56,8 +98,8 @@ def cut_rectangles_multich_with_overlay(
         m = re.search(r"GTIFF_DIR:(\d+):", s)
         return int(m.group(1)) if m else 0
     subdatasets = sorted(subdatasets, key=_dir_index)
-
     datasets = [rasterio.open(sref) for sref in subdatasets]
+
     try:
         first = datasets[0]
         print(f"\nProcessing {ome_tiff_path}")
@@ -79,22 +121,13 @@ def cut_rectangles_multich_with_overlay(
         # Spatial index for cells
         cells_sindex = cells_gdf.sindex if not cells_gdf.empty else None
 
-        # Build a global (deterministic) mapping label -> id/color
-        all_labels = sorted(map(str, cells_gdf[label_col].dropna().unique()))
-        label_to_id = {lab: i+1 for i, lab in enumerate(all_labels)}  # 0 reserved for background
-        label_to_rgb = {lab: _stable_rgb(lab) for lab in all_labels}
-        print("  Label map:", label_to_id)
-
         for i, row in gdf.iterrows():
             glom_geom = row.geometry
             if glom_geom is None or glom_geom.is_empty:
                 continue
 
             minx, miny, maxx, maxy = glom_geom.bounds
-            cropped_list = []
-            used_transform = None
-            target_shape = None
-            win_for_cells = None
+            cropped_list, used_transform, target_shape, win_for_cells = [], None, None, None
 
             # Read same bbox window from every subdataset
             for ds in datasets:
@@ -151,11 +184,10 @@ def cut_rectangles_multich_with_overlay(
                     cand_idx = list(cells_sindex.intersection(glom_geom.bounds))
                     if cand_idx:
                         cand = cells_gdf.iloc[cand_idx]
-                        # Only cells intersecting glomerulus
                         cand = cand[cand.geometry.intersects(glom_geom)]
                         shapes = []
-                        for g, lab in zip(cand.geometry, cand[label_col]):
-                            if g is None or g.is_empty or lab is None:
+                        for g, lab in zip(cand.geometry, cand["_label"]):
+                            if g is None or g.is_empty:
                                 continue
                             gi = g.intersection(glom_geom)
                             if gi.is_empty:
@@ -170,7 +202,7 @@ def cut_rectangles_multich_with_overlay(
                                 fill=0,
                                 default_value=0,
                                 dtype="int32",
-                                merge_alg=MergeAlg.replace  # last wins if overlaps
+                                merge_alg=MergeAlg.replace
                             )
                 else:
                     # Pixel mode: translate to crop-local px, clip to window & glom
@@ -182,8 +214,8 @@ def cut_rectangles_multich_with_overlay(
                             cand = cells_gdf.iloc[cand_idx]
                             cand = cand[cand.geometry.intersects(glom_geom)]
                             shapes = []
-                            for g, lab in zip(cand.geometry, cand[label_col]):
-                                if g is None or g.is_empty or lab is None:
+                            for g, lab in zip(cand.geometry, cand["_label"]):
+                                if g is None or g.is_empty:
                                     continue
                                 g2 = translate(g, xoff=-col0, yoff=-row0).intersection(box(0, 0, W, H))
                                 gi = g2.intersection(glom_shifted)
@@ -212,7 +244,7 @@ def cut_rectangles_multich_with_overlay(
                 overlay_rgba[mask, 0] = r
                 overlay_rgba[mask, 1] = g
                 overlay_rgba[mask, 2] = b
-                overlay_rgba[mask, 3] = overlay_alpha  # same alpha for all classes
+                overlay_rgba[mask, 3] = overlay_alpha
 
             # Compose overlay on top of crop
             rgba = rgb_img.convert("RGBA")
@@ -223,103 +255,8 @@ def cut_rectangles_multich_with_overlay(
             overlay_png = out_dir / f"{prefix}_polygon_{i:04d}_overlay.png"
             rgb_img.save(crop_png)
             out_overlay.convert("RGB").save(overlay_png)
-
-            # (Optional) also save a legend image
-            legend_png = out_dir / f"{prefix}_polygon_{i:04d}_legend.png"
-            try:
-                # tiny legend image
-                swatch_h = 20
-                pad = 6
-                H_legend = swatch_h * (len(label_to_id) + 1) + pad * 2
-                W_legend = 480
-                legend = Image.new("RGB", (W_legend, H_legend), (255, 255, 255))
-                from PIL import ImageDraw, ImageFont
-                draw = ImageDraw.Draw(legend)
-                y = pad
-                draw.text((pad, y), "Legend (label → color)", fill=(0, 0, 0))
-                y += swatch_h
-                for lab in sorted(label_to_id.keys()):
-                    color = label_to_rgb[lab]
-                    draw.rectangle([pad, y, pad + swatch_h, y + swatch_h], fill=color)
-                    draw.text((pad + swatch_h + 8, y + 2), str(lab), fill=(0, 0, 0))
-                    y += swatch_h
-                legend.save(legend_png)
-            except Exception:
-                pass
-
             print(f"  Saved: {crop_png} and {overlay_png}")
 
     finally:
         for ds in datasets:
             ds.close()
-
-
-# ---- Batch runner ----
-if __name__ == "__main__":
-    # Folders
-    labels_dir = Path("/data/pwojcik/For_Piotr/Labels/glom_labels")    # ROI polygons
-    cells_dir  = Path("/data/pwojcik/For_Piotr/Labels/cells_labels")    # cell polygons (with labels)
-    images_dir = Path("/data/pwojcik/For_Piotr/Images")
-    out_root   = Path("/data/pwojcik/For_Piotr/gloms_rect")
-
-    # Allowed image extensions (preference order)
-    exts = [".ome.tiff", ".ome.tif", ".tif", ".tiff"]
-
-    def find_image_for(stem: str) -> Path:
-        for ext in exts:
-            cand = images_dir / f"{stem}{ext}"
-            if cand.exists():
-                return cand
-        for p in images_dir.rglob("*"):
-            if p.is_file() and any(str(p.name).lower().endswith(ext) for ext in exts):
-                if p.stem == stem or p.name.startswith(stem):
-                    return p
-        return None
-
-    def find_cells_for(stem: str) -> Path:
-        cand = cells_dir / f"{stem}.geojson"
-        if cand.exists():
-            return cand
-        for p in cells_dir.glob("*.geojson"):
-            if p.stem == stem or p.name.startswith(stem):
-                return p
-        return None
-
-    geojsons = sorted(labels_dir.glob("*.geojson"))
-    if not geojsons:
-        print(f"No .geojson files found in {labels_dir}")
-        raise SystemExit(1)
-
-    for gj in geojsons:
-        stem = gj.stem
-        img = find_image_for(stem)
-        cells = find_cells_for(stem)
-
-        if img is None:
-            print(f"[SKIP] No matching image for {stem}")
-            continue
-        if cells is None:
-            print(f"[SKIP] No matching cells GeoJSON for {stem}")
-            continue
-
-        out_dir = out_root / stem
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        print(f"\n=== Processing: {stem} ===")
-        print(f"ROI GeoJSON:   {gj}")
-        print(f"Cells GeoJSON: {cells}")
-        print(f"Image:         {img}")
-        print(f"Output:        {out_dir}")
-
-        try:
-            cut_rectangles_multich_with_overlay(
-                geojson_path=str(gj),
-                cells_geojson_path=str(cells),
-                ome_tiff_path=str(img),
-                output_dir=str(out_dir),
-                prefix=img.stem,              # name crops after original image
-                overlay_alpha=128,            # semi-transparent
-                cell_label_field=None         # set to your column name if auto-detect fails
-            )
-        except Exception as e:
-            print(f"[ERROR] {stem}: {e}")
