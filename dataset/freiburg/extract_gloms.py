@@ -15,7 +15,7 @@ from PIL import Image
 def _pick_label_field(gdf, explicit=None):
     if explicit and explicit in gdf.columns:
         return explicit
-    candidates = ["label", "type", "class", "cells_type", "category", "phenotype", "name", "Name"]
+    candidates = ["label", "type", "class", "cell_type", "category", "phenotype", "name", "Name"]
     for c in candidates:
         if c in gdf.columns:
             return c
@@ -220,4 +220,106 @@ def cut_rectangles_multich_with_overlay(
 
             # ---- Save PNGs ----
             crop_png = out_dir / f"{prefix}_polygon_{i:04d}.png"
-            overlay_png = out_dir / f"{prefix}_polygon_{i:04d}_ov_
+            overlay_png = out_dir / f"{prefix}_polygon_{i:04d}_overlay.png"
+            rgb_img.save(crop_png)
+            out_overlay.convert("RGB").save(overlay_png)
+
+            # (Optional) also save a legend image
+            legend_png = out_dir / f"{prefix}_polygon_{i:04d}_legend.png"
+            try:
+                # tiny legend image
+                swatch_h = 20
+                pad = 6
+                H_legend = swatch_h * (len(label_to_id) + 1) + pad * 2
+                W_legend = 480
+                legend = Image.new("RGB", (W_legend, H_legend), (255, 255, 255))
+                from PIL import ImageDraw, ImageFont
+                draw = ImageDraw.Draw(legend)
+                y = pad
+                draw.text((pad, y), "Legend (label → color)", fill=(0, 0, 0))
+                y += swatch_h
+                for lab in sorted(label_to_id.keys()):
+                    color = label_to_rgb[lab]
+                    draw.rectangle([pad, y, pad + swatch_h, y + swatch_h], fill=color)
+                    draw.text((pad + swatch_h + 8, y + 2), str(lab), fill=(0, 0, 0))
+                    y += swatch_h
+                legend.save(legend_png)
+            except Exception:
+                pass
+
+            print(f"  Saved: {crop_png} and {overlay_png}")
+
+    finally:
+        for ds in datasets:
+            ds.close()
+
+
+# ---- Batch runner ----
+if __name__ == "__main__":
+    # Folders
+    labels_dir = Path("/data/pwojcik/For_Piotr/Labels/glom_labels")    # ROI polygons
+    cells_dir  = Path("/data/pwojcik/For_Piotr/Labels/cells_labels")    # cell polygons (with labels)
+    images_dir = Path("/data/pwojcik/For_Piotr/Images")
+    out_root   = Path("/data/pwojcik/For_Piotr/gloms_rect")
+
+    # Allowed image extensions (preference order)
+    exts = [".ome.tiff", ".ome.tif", ".tif", ".tiff"]
+
+    def find_image_for(stem: str) -> Path:
+        for ext in exts:
+            cand = images_dir / f"{stem}{ext}"
+            if cand.exists():
+                return cand
+        for p in images_dir.rglob("*"):
+            if p.is_file() and any(str(p.name).lower().endswith(ext) for ext in exts):
+                if p.stem == stem or p.name.startswith(stem):
+                    return p
+        return None
+
+    def find_cells_for(stem: str) -> Path:
+        cand = cells_dir / f"{stem}.geojson"
+        if cand.exists():
+            return cand
+        for p in cells_dir.glob("*.geojson"):
+            if p.stem == stem or p.name.startswith(stem):
+                return p
+        return None
+
+    geojsons = sorted(labels_dir.glob("*.geojson"))
+    if not geojsons:
+        print(f"No .geojson files found in {labels_dir}")
+        raise SystemExit(1)
+
+    for gj in geojsons:
+        stem = gj.stem
+        img = find_image_for(stem)
+        cells = find_cells_for(stem)
+
+        if img is None:
+            print(f"[SKIP] No matching image for {stem}")
+            continue
+        if cells is None:
+            print(f"[SKIP] No matching cells GeoJSON for {stem}")
+            continue
+
+        out_dir = out_root / stem
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"\n=== Processing: {stem} ===")
+        print(f"ROI GeoJSON:   {gj}")
+        print(f"Cells GeoJSON: {cells}")
+        print(f"Image:         {img}")
+        print(f"Output:        {out_dir}")
+
+        try:
+            cut_rectangles_multich_with_overlay(
+                geojson_path=str(gj),
+                cells_geojson_path=str(cells),
+                ome_tiff_path=str(img),
+                output_dir=str(out_dir),
+                prefix=img.stem,              # name crops after original image
+                overlay_alpha=128,            # semi-transparent
+                cell_label_field=None         # set to your column name if auto-detect fails
+            )
+        except Exception as e:
+            print(f"[ERROR] {stem}: {e}")
