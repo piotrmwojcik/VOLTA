@@ -53,5 +53,5 @@ def cut_polygons(geojson_path, tiff_path, output_dir="output_polygons"):
             print(f"Saved {save_path}")
 
 
-cut_polygons("/data/pwojcik/For_Piotr/glom_labels/A_hNiere_S3.geojson",
+cut_polygons("/data/pwojcik/For_Piotr/Labels/glom_labels/A_hNiere_S3.geojson",
              "/data/pwojcik/For_Piotr/Images/A_hNiere_S3.ome.tiff", output_dir="/data/pwojcik/For_Piotr/gloms")
