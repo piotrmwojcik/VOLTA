@@ -204,7 +204,7 @@ def cut_rectangles_multich_with_overlay(
 if __name__ == "__main__":
     # Folders
     labels_dir = Path("/data/pwojcik/For_Piotr/Labels/glom_labels")  # ROI polygons
-    cells_dir  = Path("/data/pwojcik/For_Piotr/Labels/cell_labels")  # cell polygons
+    cells_dir  = Path("/data/pwojcik/For_Piotr/Labels/cells_labels")  # cell polygons
     images_dir = Path("/data/pwojcik/For_Piotr/Images")
     out_root   = Path("/data/pwojcik/For_Piotr/gloms_rect")
 
