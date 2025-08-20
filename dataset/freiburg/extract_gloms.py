@@ -249,7 +249,7 @@ def cut_rectangles_multich_with_cells(
 if __name__ == "__main__":
     # Configure your folders
     labels_dir = Path("/data/pwojcik/For_Piotr/Labels/glom_labels")     # ROI polygons
-    cells_dir  = Path("/data/pwojcik/For_Piotr/Labels/cell_labels")     # CELL polygons (one file per case)
+    cells_dir  = Path("/data/pwojcik/For_Piotr/Labels/cells_labels")     # CELL polygons (one file per case)
     images_dir = Path("/data/pwojcik/For_Piotr/Images")
     out_root   = Path("/data/pwojcik/For_Piotr/gloms_rect")
 
