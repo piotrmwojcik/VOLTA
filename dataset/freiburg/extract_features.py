@@ -55,6 +55,8 @@ def load_dino_backbone_from_checkpoint(ckpt_path: str) -> ResNet50Backbone:
 
     base = tv.resnet50(pretrained=False)
     missing, unexpected = base.load_state_dict(backbone_sd, strict=False)
+    print(missing)
+    print(unexpected)
     print(f"[load] ResNet50 backbone <- checkpoint | missing={len(missing)} unexpected={len(unexpected)}")
 
     return ResNet50Backbone(base)
