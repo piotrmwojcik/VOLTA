@@ -129,30 +129,32 @@ def main():
 
     # ---- plot ----
     plt.figure(figsize=(9, 7))
+
     classes = np.unique(y)
-    # map labels to indices for consistent coloring
     cls_to_idx = {c: i for i, c in enumerate(classes)}
-    colors = [cls_to_idx[c] for c in y]
-    scatter = plt.scatter(Z[:, 0], Z[:, 1], c=colors, s=6, alpha=0.8)
-    # custom legend (one handle per class)
-    # Matplotlib will color by integer -> default colormap; build legend manually
-    handles = []
-    for cls, idx in cls_to_idx.items():
-        handles.append(
-            plt.Line2D([0], [0], marker='o', linestyle='', markersize=6, label=cls)
+    idxs = np.array([cls_to_idx[c] for c in y], dtype=int)
+
+    # choose a discrete colormap with enough distinct colors
+    cmap_name = "tab10" if len(classes) <= 10 else ("tab20" if len(classes) <= 20 else "gist_ncar")
+    cmap = plt.cm.get_cmap(cmap_name, len(classes))
+
+    scatter = plt.scatter(Z[:, 0], Z[:, 1], c=idxs, cmap=cmap, s=6, alpha=0.8)
+
+    # build legend with colored proxies that match the scatter colors
+    handles = [
+        plt.Line2D(
+            [0], [0], marker="o", linestyle="", markersize=6,
+            markerfacecolor=cmap(i), markeredgecolor="none", label=cls
         )
-    plt.legend(handles=handles, title="Classes", bbox_to_anchor=(1.05, 1.0), loc="upper left", borderaxespad=0.)
+        for i, cls in enumerate(classes)
+    ]
+
+    plt.legend(handles=handles, title="Classes",
+               bbox_to_anchor=(1.05, 1.0), loc="upper left", borderaxespad=0.)
     plt.title("t-SNE of DINO ROI features")
     plt.tight_layout()
     plt.savefig(f"{out_prefix}_tsne.png", dpi=200)
     plt.close()
-
-    lines = [f"Saved:",
-             f"  - {out_prefix}_collated.npz"]
-    if pd is not None:
-        lines.append(f"  - {out_prefix}_collated.csv")
-    lines.append(f"  - {out_prefix}_tsne.png")
-    print("\n".join(lines))
 
 if __name__ == "__main__":
     main()
