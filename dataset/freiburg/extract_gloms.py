@@ -45,6 +45,43 @@ def sort_gtiff_dirs(slist):
         return int(m.group(1)) if m else 0
     return sorted(slist, key=dir_index)
 
+def clamp_xyxy_to_image(x0, y0, x1, y1, W, H):
+    x0 = max(0.0, min(float(x0), W))
+    y0 = max(0.0, min(float(y0), H))
+    x1 = max(0.0, min(float(x1), W))
+    y1 = max(0.0, min(float(y1), H))
+    # ensure ordering
+    x_min, x_max = (x0, x1) if x0 <= x1 else (x1, x0)
+    y_min, y_max = (y0, y1) if y0 <= y1 else (y1, y0)
+    # integer pixel box (inclusive-exclusive)
+    x_min_i = int(np.floor(x_min))
+    y_min_i = int(np.floor(y_min))
+    x_max_i = int(np.ceil(x_max))
+    y_max_i = int(np.ceil(y_max))
+    # clamp again after rounding
+    x_min_i = max(0, min(x_min_i, W))
+    y_min_i = max(0, min(y_min_i, H))
+    x_max_i = max(0, min(x_max_i, W))
+    y_max_i = max(0, min(y_max_i, H))
+    w = max(0, x_max_i - x_min_i)
+    h = max(0, y_max_i - y_min_i)
+    return x_min_i, y_min_i, w, h
+
+def world_geom_bounds_to_crop_bbox(geom, inv_transform, W, H):
+    """
+    Convert a world-CRS geometry's bounds to crop pixel bbox using the
+    inverse of the crop's transform.
+    """
+    minx, miny, maxx, maxy = geom.bounds
+    # project 4 corners to pixel space
+    col0, row0 = (~inv_transform) * (minx, miny) if isinstance(inv_transform, Affine) else inv_transform * (minx, miny)
+    col1, row1 = (~inv_transform) * (maxx, miny) if isinstance(inv_transform, Affine) else inv_transform * (maxx, miny)
+    col2, row2 = (~inv_transform) * (maxx, maxy) if isinstance(inv_transform, Affine) else inv_transform * (maxx, maxy)
+    col3, row3 = (~inv_transform) * (minx, maxy) if isinstance(inv_transform, Affine) else inv_transform * (minx, maxy)
+    xs = [col0, col1, col2, col3]
+    ys = [row0, row1, row2, row3]
+    return clamp_xyxy_to_image(min(xs), min(ys), max(xs), max(ys), W, H)
+
 # ----------------- core function -----------------
 def cut_rectangles_multich_with_overlay(
     dataset_tag,                # 'old' or 'new' (used in filename)
@@ -162,6 +199,7 @@ def cut_rectangles_multich_with_overlay(
 
             # Raster of class ids (0 bg), **inside glomerulus only**
             label_raster = np.zeros((H, W), dtype=np.int32)
+            bbox_records = []  # ---- collect cell bboxes for this crop ----
 
             if cells_sindex is not None:
                 if geo_mode:
@@ -170,6 +208,7 @@ def cut_rectangles_multich_with_overlay(
                         cand = cells_gdf.iloc[cand_idx]
                         cand = cand[cand.geometry.intersects(glom_geom)]
                         shapes = []
+                        invT = used_transform  # pixel->world; we'll use its inverse below
                         for g, lab in zip(cand.geometry, cand["_label"]):
                             if g is None or g.is_empty:
                                 continue
@@ -181,6 +220,14 @@ def cut_rectangles_multich_with_overlay(
                                 label_to_id[lab] = new_id
                                 label_to_rgb[lab] = stable_rgb(lab)
                             shapes.append((gi, label_to_id[lab]))
+                            # bbox in crop pixel coords via inverse transform
+                            x, y, w, h = world_geom_bounds_to_crop_bbox(gi, invT, W, H)
+                            if w > 0 and h > 0:
+                                bbox_records.append({
+                                    "bbox": [x, y, w, h],
+                                    "label": lab,
+                                    "label_id": label_to_id[lab],
+                                })
                         if shapes:
                             label_raster = rasterize(
                                 shapes=shapes,
@@ -212,6 +259,15 @@ def cut_rectangles_multich_with_overlay(
                                     label_to_id[lab] = new_id
                                     label_to_rgb[lab] = stable_rgb(lab)
                                 shapes.append((gi, label_to_id[lab]))
+                                # gi is already in crop pixel space
+                                gx0, gy0, gx1, gy1 = gi.bounds
+                                x, y, w, h = clamp_xyxy_to_image(gx0, gy0, gx1, gy1, W, H)
+                                if w > 0 and h > 0:
+                                    bbox_records.append({
+                                        "bbox": [x, y, w, h],
+                                        "label": lab,
+                                        "label_id": label_to_id[lab],
+                                    })
                             if shapes:
                                 label_raster = rasterize(
                                     shapes=shapes,
@@ -241,9 +297,21 @@ def cut_rectangles_multich_with_overlay(
 
             crop_png    = out_dir / f"{prefix}__polygon_{i:04d}.png"
             overlay_png = out_dir / f"{prefix}__polygon_{i:04d}__overlay.png"
+            json_path   = out_dir / f"{prefix}__polygon_{i:04d}__bboxes.json"
+
             rgb_img.save(crop_png)
             out_overlay.convert("RGB").save(overlay_png)
-            print(f"  Saved: {crop_png.name} and {overlay_png.name}")
+
+            # ---- save JSON with bounding boxes ----
+            with open(json_path, "w") as f:
+                json.dump({
+                    "image": crop_png.name,
+                    "width": int(W),
+                    "height": int(H),
+                    "boxes": bbox_records
+                }, f, indent=2)
+
+            print(f"  Saved: {crop_png.name}, {overlay_png.name}, {json_path.name}")
 
     finally:
         for ds in datasets:
@@ -252,7 +320,7 @@ def cut_rectangles_multich_with_overlay(
 # ----------------- batch runner (COMBINES BOTH DATASETS) -----------------
 if __name__ == "__main__":
     # Output root (shared single folder)
-    out_root = Path("/data/pwojcik/For_Piotr/gloms_rect")
+    out_root = Path("/data/pwojcik/For_Piotr/gloms_rect_test")
     out_root.mkdir(parents=True, exist_ok=True)
 
     # Dataset groups: (tag, labels_dir, cells_dir, images_dir)
