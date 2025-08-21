@@ -84,6 +84,8 @@ def load_dino_backbone_from_checkpoint(ckpt_path: str):
     # build torchvision resnet50 backbone and load
     base = tv.resnet50(pretrained=False)
     missing, unexpected = base.load_state_dict(bk, strict=False)
+    print(missing)
+    print(unexpected)
     print(f"[load] ResNet50 backbone <- checkpoint | missing={len(missing)} unexpected={len(unexpected)}")
     # optional: print a few examples if there are many mismatches
     if len(missing) > 0 or len(unexpected) > 0:
