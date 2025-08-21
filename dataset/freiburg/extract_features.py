@@ -15,9 +15,6 @@ from torchvision.ops import roi_align
 
 # --------------------- Model utils ---------------------
 class ResNet50Backbone(nn.Module):
-    """
-    Returns C5 feature map (N, 2048, H/32, W/32) from a torchvision resnet50.
-    """
     def __init__(self, base: tv.ResNet):
         super().__init__()
         self.stem = nn.Sequential(base.conv1, base.bn1, base.relu, base.maxpool)
@@ -25,69 +22,48 @@ class ResNet50Backbone(nn.Module):
         self.layer2 = base.layer2
         self.layer3 = base.layer3
         self.layer4 = base.layer4
-
     def forward(self, x):
         x = self.stem(x)
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)   # C5
+        x = self.layer1(x); x = self.layer2(x); x = self.layer3(x); x = self.layer4(x)
         return x
 
-
 def _get_student_state(ckpt):
-    if "student" in ckpt and isinstance(ckpt["student"], dict):
-        sd = ckpt["student"]
-        if "state_dict" in sd:
-            sd = sd["state_dict"]
-    elif "state_dict" in ckpt:
-        sd = ckpt["state_dict"]
+    if isinstance(ckpt, dict):
+        if "student" in ckpt and isinstance(ckpt["student"], dict):
+            sd = ckpt["student"].get("state_dict", ckpt["student"])
+        elif "state_dict" in ckpt:
+            sd = ckpt["state_dict"]
+        else:
+            sd = ckpt
     else:
         sd = ckpt
     return sd
 
-def _strip_prefixes(sd, prefixes=("module.", "student.", "model.")):
-    out = {}
+def _strip_prefix_once(k, prefix):
+    return k[len(prefix):] if k.startswith(prefix) else k
+
+def _normalize_to_resnet_keys(sd):
+    """Return a dict with keys matching torchvision resnet (conv1, bn1, layer1, ...)."""
+    cleaned = {}
     for k, v in sd.items():
-        for p in prefixes:
-            if k.startswith(p):
-                k = k[len(p):]
-        out[k] = v
-    return out
+        # remove common wrappers
+        k = _strip_prefix_once(k, "module.")
+        k = _strip_prefix_once(k, "student.")
+        k = _strip_prefix_once(k, "model.")
+        # if this is a DINO-style student wrapper like 'backbone.xxx', strip it
+        k = _strip_prefix_once(k, "backbone.")
+        cleaned[k] = v
+    return cleaned
 
-def _extract_backbone(sd):
-    bk = {}
-    for k, v in sd.items():
-        if k.startswith("backbone."):
-            bk[k.split("backbone.", 1)[1]] = v
-    if not bk:
-        # detect ViT and fail early
-        if any(k.startswith(("pos_embed", "patch_embed", "blocks")) for k in sd.keys()):
-            raise RuntimeError("Checkpoint looks like ViT weights. Load a ViT backbone, not ResNet.")
-        bk = sd
-    return bk
-
-def _safe_arch_from_ckpt(ckpt):
-    arch = "unknown"
-    if isinstance(ckpt, dict):
-        args_obj = ckpt.get("args", None)
-        if isinstance(args_obj, dict):
-            arch = args_obj.get("arch", arch)
-        elif args_obj is not None:
-            # Namespace or similar
-            arch = getattr(args_obj, "arch", arch)
-        # also allow direct key
-        arch = ckpt.get("arch", arch)
-    return arch
-
-def load_dino_backbone_from_checkpoint(ckpt_path: str):
+def load_dino_backbone_from_checkpoint(ckpt_path: str) -> ResNet50Backbone:
     ckpt = torch.load(ckpt_path, map_location="cpu")
-    arch = _safe_arch_from_ckpt(ckpt)
-    print(f"[ckpt] arch in checkpoint: {arch}")
+    raw_sd = _get_student_state(ckpt)
 
-    sd = _get_student_state(ckpt)
-    sd = _strip_prefixes(sd, prefixes=("module.", "student.", "model."))
-    bk = _extract_backbone(sd)
+    # quick ViT detection to avoid silent mismatch
+    if any(k.startswith(("pos_embed", "patch_embed", "blocks", "encoder")) for k in raw_sd.keys()):
+        raise RuntimeError("Checkpoint looks like ViT/DeiT weights. Use a ViT backbone path instead of ResNet.")
+
+    bk = _normalize_to_resnet_keys(raw_sd)
 
     base = tv.resnet50(pretrained=False)
     missing, unexpected = base.load_state_dict(bk, strict=False)
@@ -95,6 +71,7 @@ def load_dino_backbone_from_checkpoint(ckpt_path: str):
     if missing or unexpected:
         print("  examples missing:", ", ".join(missing[:5]))
         print("  examples unexpected:", ", ".join(unexpected[:5]))
+
     return ResNet50Backbone(base)
 
 # --------------------- Image / box utils ---------------------
