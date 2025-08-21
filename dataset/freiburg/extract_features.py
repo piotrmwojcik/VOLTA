@@ -7,6 +7,7 @@ from PIL import Image
 
 import torch
 import torch.nn as nn
+from types import SimpleNamespace
 from torchvision import models as tv
 from torchvision import transforms as T
 from torchvision.ops import roi_align
@@ -34,17 +35,15 @@ class ResNet50Backbone(nn.Module):
         return x
 
 
-
 def _get_student_state(ckpt):
-    # handle various save formats
     if "student" in ckpt and isinstance(ckpt["student"], dict):
         sd = ckpt["student"]
-        if "state_dict" in sd:  # some tools wrap again
+        if "state_dict" in sd:
             sd = sd["state_dict"]
     elif "state_dict" in ckpt:
         sd = ckpt["state_dict"]
     else:
-        sd = ckpt  # hope it's already a flat state_dict
+        sd = ckpt
     return sd
 
 def _strip_prefixes(sd, prefixes=("module.", "student.", "model.")):
@@ -57,43 +56,46 @@ def _strip_prefixes(sd, prefixes=("module.", "student.", "model.")):
     return out
 
 def _extract_backbone(sd):
-    """Return only backbone.* -> strip to resnet keys (conv1, bn1, layer1...)"""
     bk = {}
     for k, v in sd.items():
         if k.startswith("backbone."):
-            k2 = k.split("backbone.", 1)[1]
-            bk[k2] = v
-    # If no backbone.* prefix, maybe already bare resnet keys
+            bk[k.split("backbone.", 1)[1]] = v
     if not bk:
-        # detect ViT keys to fail early
+        # detect ViT and fail early
         if any(k.startswith(("pos_embed", "patch_embed", "blocks")) for k in sd.keys()):
-            raise RuntimeError("Checkpoint looks like ViT weights (has pos_embed/patch_embed). "
-                               "Load a ViT backbone instead of ResNet.")
-        # otherwise assume it's already resnet-style keys
+            raise RuntimeError("Checkpoint looks like ViT weights. Load a ViT backbone, not ResNet.")
         bk = sd
     return bk
 
+def _safe_arch_from_ckpt(ckpt):
+    arch = "unknown"
+    if isinstance(ckpt, dict):
+        args_obj = ckpt.get("args", None)
+        if isinstance(args_obj, dict):
+            arch = args_obj.get("arch", arch)
+        elif args_obj is not None:
+            # Namespace or similar
+            arch = getattr(args_obj, "arch", arch)
+        # also allow direct key
+        arch = ckpt.get("arch", arch)
+    return arch
+
 def load_dino_backbone_from_checkpoint(ckpt_path: str):
     ckpt = torch.load(ckpt_path, map_location="cpu")
-    arch = (ckpt.get("args", {}) or {}).get("arch", "unknown")
+    arch = _safe_arch_from_ckpt(ckpt)
     print(f"[ckpt] arch in checkpoint: {arch}")
 
     sd = _get_student_state(ckpt)
     sd = _strip_prefixes(sd, prefixes=("module.", "student.", "model."))
     bk = _extract_backbone(sd)
 
-    # build torchvision resnet50 backbone and load
     base = tv.resnet50(pretrained=False)
     missing, unexpected = base.load_state_dict(bk, strict=False)
     print(f"[load] ResNet50 backbone <- checkpoint | missing={len(missing)} unexpected={len(unexpected)}")
-    # optional: print a few examples if there are many mismatches
-    if len(missing) > 0 or len(unexpected) > 0:
-        ex_m = ", ".join(missing[:5])
-        ex_u = ", ".join(unexpected[:5])
-        print(f"  examples missing: {ex_m}")
-        print(f"  examples unexpected: {ex_u}")
+    if missing or unexpected:
+        print("  examples missing:", ", ".join(missing[:5]))
+        print("  examples unexpected:", ", ".join(unexpected[:5]))
     return ResNet50Backbone(base)
-
 
 # --------------------- Image / box utils ---------------------
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
