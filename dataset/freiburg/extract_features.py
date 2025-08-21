@@ -13,7 +13,10 @@ from torchvision import transforms as T
 from torchvision.ops import roi_align
 
 
-# --------------------- Model utils ---------------------
+import torch
+from torchvision import models as tv
+import torch.nn as nn
+
 class ResNet50Backbone(nn.Module):
     def __init__(self, base: tv.ResNet):
         super().__init__()
@@ -28,6 +31,7 @@ class ResNet50Backbone(nn.Module):
         return x
 
 def _get_student_state(ckpt):
+    """Return the student's state_dict (flat), handling common DINO checkpoints."""
     if isinstance(ckpt, dict):
         if "student" in ckpt and isinstance(ckpt["student"], dict):
             sd = ckpt["student"].get("state_dict", ckpt["student"])
@@ -39,20 +43,40 @@ def _get_student_state(ckpt):
         sd = ckpt
     return sd
 
-def _strip_prefix_once(k, prefix):
-    return k[len(prefix):] if k.startswith(prefix) else k
-
 def _normalize_to_resnet_keys(sd):
-    """Return a dict with keys matching torchvision resnet (conv1, bn1, layer1, ...)."""
+    """
+    Normalize keys to torchvision resnet style: conv1, bn1, layer1.*, ..., layer4.*, fc.
+    Aggressively strips wrappers like: module., student., model., teacher., backbone., net., encoder_q., encoder_k., encoder.
+    Drops head/proj/prototypes keys altogether.
+    """
+    strip_prefixes = (
+        "module.", "student.", "model.", "teacher.",
+        "backbone.", "net.", "encoder_q.", "encoder_k.", "encoder."
+    )
+    drop_if_starts = (
+        "head", "prototypes", "projection", "dino_head",
+        "cls_head", "mlp_head", "proj", "prototype", "queue", "fc_norm"
+    )
+
     cleaned = {}
     for k, v in sd.items():
-        # remove common wrappers
-        k = _strip_prefix_once(k, "module.")
-        k = _strip_prefix_once(k, "student.")
-        k = _strip_prefix_once(k, "model.")
-        # if this is a DINO-style student wrapper like 'backbone.xxx', strip it
-        k = _strip_prefix_once(k, "backbone.")
+        k = k.strip()
+
+        # repeatedly strip any of the known prefixes until none apply
+        changed = True
+        while changed:
+            changed = False
+            for p in strip_prefixes:
+                if k.startswith(p):
+                    k = k[len(p):]
+                    changed = True
+
+        # drop classifier / projection / head params
+        if any(k.startswith(d) for d in drop_if_starts):
+            continue
+
         cleaned[k] = v
+
     return cleaned
 
 def load_dino_backbone_from_checkpoint(ckpt_path: str) -> ResNet50Backbone:
@@ -60,10 +84,22 @@ def load_dino_backbone_from_checkpoint(ckpt_path: str) -> ResNet50Backbone:
     raw_sd = _get_student_state(ckpt)
 
     # quick ViT detection to avoid silent mismatch
-    if any(k.startswith(("pos_embed", "patch_embed", "blocks", "encoder")) for k in raw_sd.keys()):
-        raise RuntimeError("Checkpoint looks like ViT/DeiT weights. Use a ViT backbone path instead of ResNet.")
+    if any(k.startswith(("pos_embed", "patch_embed", "blocks", "encoder.blocks", "norm", "heads")) for k in raw_sd.keys()):
+        raise RuntimeError("Checkpoint looks like ViT/DeiT weights. Use a ViT backbone variant, not ResNet.")
+
+    # DEBUG: show a few raw keys
+    raw_keys = list(raw_sd.keys())
+    print("[debug] raw keys (first 10):", raw_keys[:10])
 
     bk = _normalize_to_resnet_keys(raw_sd)
+
+    # DEBUG: show a few normalized keys
+    norm_keys = list(bk.keys())
+    print("[debug] normalized keys (first 10):", norm_keys[:10])
+
+    # If somehow backbone.* still survived, strip it one more time (belt & suspenders)
+    if any(k.startswith("backbone.") for k in bk.keys()):
+        bk = { (k.split("backbone.", 1)[1] if k.startswith("backbone.") else k): v for k, v in bk.items() }
 
     base = tv.resnet50(pretrained=False)
     missing, unexpected = base.load_state_dict(bk, strict=False)
@@ -73,6 +109,7 @@ def load_dino_backbone_from_checkpoint(ckpt_path: str) -> ResNet50Backbone:
         print("  examples unexpected:", ", ".join(unexpected[:5]))
 
     return ResNet50Backbone(base)
+
 
 # --------------------- Image / box utils ---------------------
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
