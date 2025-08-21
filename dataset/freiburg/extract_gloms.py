@@ -73,7 +73,6 @@ def world_geom_bounds_to_crop_bbox(geom, inv_transform, W, H):
     inverse of the crop's transform.
     """
     minx, miny, maxx, maxy = geom.bounds
-    # project 4 corners to pixel space
     col0, row0 = (~inv_transform) * (minx, miny) if isinstance(inv_transform, Affine) else inv_transform * (minx, miny)
     col1, row1 = (~inv_transform) * (maxx, miny) if isinstance(inv_transform, Affine) else inv_transform * (maxx, miny)
     col2, row2 = (~inv_transform) * (maxx, maxy) if isinstance(inv_transform, Affine) else inv_transform * (maxx, maxy)
@@ -208,7 +207,7 @@ def cut_rectangles_multich_with_overlay(
                         cand = cells_gdf.iloc[cand_idx]
                         cand = cand[cand.geometry.intersects(glom_geom)]
                         shapes = []
-                        invT = used_transform  # pixel->world; we'll use its inverse below
+                        invT = used_transform  # pixel->world; we'll invert it for world->pixel
                         for g, lab in zip(cand.geometry, cand["_label"]):
                             if g is None or g.is_empty:
                                 continue
@@ -279,7 +278,11 @@ def cut_rectangles_multich_with_overlay(
                                     merge_alg=MergeAlg.replace
                                 )
 
-            # Build colored overlay from label_raster (GLOBAL colors)
+            # ---- binary mask: cells white (255), background black (0) ----
+            bin_mask = (label_raster > 0).astype(np.uint8) * 255  # (H,W), uint8
+            mask_img = Image.fromarray(bin_mask, mode="L")
+
+            # ---- colored overlay from label_raster (GLOBAL colors) ----
             overlay_rgba = np.zeros((H, W, 4), dtype=np.uint8)
             for lab, val in label_to_id.items():
                 m = (label_raster == val)
@@ -291,16 +294,18 @@ def cut_rectangles_multich_with_overlay(
                 overlay_rgba[m, 2] = b
                 overlay_rgba[m, 3] = overlay_alpha
 
-            # Compose and save (single folder, unique names: tag + tiff stem + polygon idx)
+            # Compose and save (single folder, unique names)
             rgba = rgb_img.convert("RGBA")
             out_overlay = Image.alpha_composite(rgba, Image.fromarray(overlay_rgba, mode="RGBA"))
 
             crop_png    = out_dir / f"{prefix}__polygon_{i:04d}.png"
             overlay_png = out_dir / f"{prefix}__polygon_{i:04d}__overlay.png"
+            mask_png    = out_dir / f"{prefix}__polygon_{i:04d}__mask.png"
             json_path   = out_dir / f"{prefix}__polygon_{i:04d}__bboxes.json"
 
             rgb_img.save(crop_png)
             out_overlay.convert("RGB").save(overlay_png)
+            mask_img.save(mask_png)  # <-- NEW: binary cell mask
 
             # ---- save JSON with bounding boxes ----
             with open(json_path, "w") as f:
@@ -311,7 +316,7 @@ def cut_rectangles_multich_with_overlay(
                     "boxes": bbox_records
                 }, f, indent=2)
 
-            print(f"  Saved: {crop_png.name}, {overlay_png.name}, {json_path.name}")
+            print(f"  Saved: {crop_png.name}, {overlay_png.name}, {mask_png.name}, {json_path.name}")
 
     finally:
         for ds in datasets:
