@@ -102,6 +102,8 @@ def main():
     ap.add_argument("--feats-dir", required=True, help="Folder with *__roi_feats.npz files")
     ap.add_argument("--out-prefix", required=True, help="Output prefix (e.g., /path/to/out/roi)")
     ap.add_argument("--normalize", type=int, default=1, help="L2-normalize features before PCA/TSNE (1/0)")
+    ap.add_argument("--label-weight", type=float, default=0.20,
+                    help="Strength of label one-hot appended to features (0 disables)")
     ap.add_argument("--pca-dim", type=int, default=50, help="PCA dim before t-SNE (0 to disable)")
     ap.add_argument("--perplexity", type=float, default=30.0, help="t-SNE perplexity")
     ap.add_argument("--max-per-class", type=int, default=0, help="Per-class cap; 0 = no cap")
