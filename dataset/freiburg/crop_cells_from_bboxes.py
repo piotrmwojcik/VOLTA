@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 import argparse, json
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageDraw
 
 def clamp(val, lo, hi): return max(lo, min(val, hi))
 
 def main():
-    ap = argparse.ArgumentParser(description="Crop cells from one image using its __bboxes.json")
+    ap = argparse.ArgumentParser(description="Crop cells and also save boxed full images using __bboxes.json")
     ap.add_argument("--image", required=True, help="Path to crop PNG (e.g., old__CASE__polygon_0007.png)")
     ap.add_argument("--bboxes", default=None, help="Path to JSON (defaults to image path with __bboxes.json)")
-    ap.add_argument("--out-dir", default=None, help="Where to save crops (default: <image_dir>/cells)")
+    ap.add_argument("--out-dir", default=None, help="Where to save outputs (default: <image_dir>/cells)")
     ap.add_argument("--pad", type=int, default=0, help="Optional pixel padding around each bbox")
     ap.add_argument("--min-size", type=int, default=1, help="Skip boxes smaller than this (min w/h)")
-    ap.add_argument("--max-cells", type=int, default=None, help="Optional limit on number of crops")
+    ap.add_argument("--max-cells", type=int, default=None, help="Optional limit on number of cells to save")
+    ap.add_argument("--box-width", type=int, default=3, help="Rectangle line width on boxed image")
     args = ap.parse_args()
 
     img_path = Path(args.image)
     if args.bboxes is None:
-        # derive JSON name from the image file (…__bboxes.json)
         bb_path = img_path.with_name(img_path.stem + "__bboxes.json")
     else:
         bb_path = Path(args.bboxes)
@@ -47,20 +47,29 @@ def main():
         if cw < args.min_size or ch < args.min_size:
             continue
 
+        # 1) save the cropped cell
         cell = im.crop((left, top, right, bottom))
 
-        # safe label for filename
         safe_lab = lab if lab else "empty"
         safe_lab = "".join(c if c.isalnum() or c in "-_." else "_" for c in safe_lab)
 
-        out_name = f"{img_path.stem}__cell_{i:04d}__{safe_lab}_{lid}_{left}-{top}-{right}-{bottom}.png"
-        cell.save(out_dir / out_name)
-        saved += 1
+        crop_name = f"{img_path.stem}__cell_{i:04d}__{safe_lab}_{lid}_{left}-{top}-{right}-{bottom}.png"
+        cell.save(out_dir / crop_name)
 
+        # 2) save the full image with a rectangle around this cell
+        boxed = im.copy()
+        draw = ImageDraw.Draw(boxed)
+        # subtract 1 to keep the rectangle inside the image when right/bottom == width/height
+        draw.rectangle([(left, top), (max(left, right-1), max(top, bottom-1))],
+                       outline=(255, 0, 0), width=args.box_width)
+        box_name = f"{img_path.stem}__cell_{i:04d}__{safe_lab}_{lid}_{left}-{top}-{right}-{bottom}__boxed.png"
+        boxed.save(out_dir / box_name)
+
+        saved += 1
         if args.max_cells is not None and saved >= args.max_cells:
             break
 
-    print(f"Done. Saved {saved} crops to {out_dir}")
+    print(f"Done. Saved {saved} cells (crops + boxed) to {out_dir}")
 
 if __name__ == "__main__":
     main()
