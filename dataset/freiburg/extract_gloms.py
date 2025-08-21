@@ -20,11 +20,6 @@ warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
 
 # ----------------- helpers -----------------
 def extract_annotation_name(value):
-    """
-    Return the annotation name string from a 'classification' field.
-    Accepts dicts (with keys name/displayName/label), plain strings,
-    and treats None/NaN as '' (empty class).
-    """
     if value is None:
         return ""
     try:
@@ -38,7 +33,6 @@ def extract_annotation_name(value):
     return str(value).strip()
 
 def stable_rgb(label_str: str):
-    """Deterministic RGB color for a given label string (including empty)."""
     h = hashlib.md5(label_str.encode("utf-8")).digest()
     return (h[0], h[1], h[2])
 
@@ -53,27 +47,30 @@ def sort_gtiff_dirs(slist):
 
 # ----------------- core function -----------------
 def cut_rectangles_multich_with_overlay(
-    dataset_tag,                # 'old' or 'new' (used for subfolder)
-    case_stem,                  # stem of the case (e.g., A_hNiere_S3)
+    dataset_tag,                # 'old' or 'new' (used in filename)
+    case_stem,                  # stem of the case (unused in filename now, but kept for compatibility)
     geojson_path,               # ROI polygons (glomeruli)
     cells_geojson_path,         # cells polygons (with 'classification')
     ome_tiff_path,              # OME-TIFF path with GTIFF_DIR subdatasets
-    out_root,                   # root output dir
+    out_root,                   # root output dir (SINGLE FOLDER for all images)
     label_to_id,                # GLOBAL mapping (mutable dict)
     label_to_rgb,               # GLOBAL colors (mutable dict)
     overlay_alpha=128
 ):
-    out_dir = Path(out_root) / dataset_tag / case_stem
+    # ---- Single shared folder for ALL outputs ----
+    out_dir = Path(out_root)
     out_dir.mkdir(parents=True, exist_ok=True)
-    prefix = Path(ome_tiff_path).stem
+
+    tiff_stem = Path(ome_tiff_path).stem
+    prefix = f"{dataset_tag}__{tiff_stem}"
 
     # Load ROIs & cells
     gdf = gpd.read_file(geojson_path)
     cells_gdf = gpd.read_file(cells_geojson_path)
 
     if "classification" not in cells_gdf.columns:
-        print(f"[WARN] 'classification' column not found in {cells_geojson_path}; skipping cells overlay.")
-        cells_gdf = cells_gdf.assign(_label="")  # all empty class
+        print(f"[WARN] 'classification' column not found in {cells_geojson_path}; using empty class.")
+        cells_gdf = cells_gdf.assign(_label="")
     else:
         cells_gdf = cells_gdf.assign(_label=cells_gdf["classification"].map(extract_annotation_name))
 
@@ -87,7 +84,7 @@ def cut_rectangles_multich_with_overlay(
 
     try:
         first = datasets[0]
-        print(f"\n[{dataset_tag}] Processing {case_stem}")
+        print(f"\n[{dataset_tag}] Processing {tiff_stem}")
         print("  Channels (subdatasets):", len(datasets))
         print("  CRS (first sds):", first.crs)
 
@@ -121,7 +118,6 @@ def cut_rectangles_multich_with_overlay(
                 if geo_mode:
                     win = from_bounds(minx, miny, maxx, maxy, transform=ds.transform)
                 else:
-                    # treat ROI bounds as pixel coords (x=col, y=row)
                     col_off = int(max(0, np.floor(minx)))
                     row_off = int(max(0, np.floor(miny)))
                     width   = int(max(0, np.ceil(maxx - minx)))
@@ -135,9 +131,8 @@ def cut_rectangles_multich_with_overlay(
                     cropped_list = []
                     break
 
-                arr = ds.read(window=win)  # (bands, H, W) — usually (1, H, W)
+                arr = ds.read(window=win)  # (bands, H, W)
                 if used_transform is None:
-                    # avoid georef warnings in pixel mode
                     used_transform = ds.window_transform(win) if geo_mode else Affine.identity()
                     target_shape = arr.shape[1:]
                     win_for_cells = win
@@ -182,7 +177,6 @@ def cut_rectangles_multich_with_overlay(
                             if gi.is_empty:
                                 continue
                             if lab not in label_to_id:
-                                # unseen label → extend global map
                                 new_id = max(label_to_id.values(), default=0) + 1
                                 label_to_id[lab] = new_id
                                 label_to_rgb[lab] = stable_rgb(lab)
@@ -241,15 +235,15 @@ def cut_rectangles_multich_with_overlay(
                 overlay_rgba[m, 2] = b
                 overlay_rgba[m, 3] = overlay_alpha
 
-            # Compose and save
+            # Compose and save (single folder, unique names: tag + tiff stem + polygon idx)
             rgba = rgb_img.convert("RGBA")
             out_overlay = Image.alpha_composite(rgba, Image.fromarray(overlay_rgba, mode="RGBA"))
 
-            crop_png    = out_dir / f"{prefix}_polygon_{i:04d}.png"
-            overlay_png = out_dir / f"{prefix}_polygon_{i:04d}_overlay.png"
+            crop_png    = out_dir / f"{prefix}__polygon_{i:04d}.png"
+            overlay_png = out_dir / f"{prefix}__polygon_{i:04d}__overlay.png"
             rgb_img.save(crop_png)
             out_overlay.convert("RGB").save(overlay_png)
-            print(f"  Saved: {crop_png} and {overlay_png}")
+            print(f"  Saved: {crop_png.name} and {overlay_png.name}")
 
     finally:
         for ds in datasets:
@@ -257,26 +251,20 @@ def cut_rectangles_multich_with_overlay(
 
 # ----------------- batch runner (COMBINES BOTH DATASETS) -----------------
 if __name__ == "__main__":
-    # Output root (shared)
+    # Output root (shared single folder)
     out_root = Path("/data/pwojcik/For_Piotr/gloms_rect")
     out_root.mkdir(parents=True, exist_ok=True)
 
     # Dataset groups: (tag, labels_dir, cells_dir, images_dir)
     datasets_cfg = [
-        # Original dataset
-        (
-            "old",
-            Path("/data/pwojcik/For_Piotr/Labels/glom_labels"),
-            Path("/data/pwojcik/For_Piotr/Labels/cells_labels"),
-            Path("/data/pwojcik/For_Piotr/Images"),
-        ),
-        # NEW dataset you asked to add
-        (
-            "new",
-            Path("/data/pwojcik/For_Piotr/new_images/ROIs_geojson"),
-            Path("/data/pwojcik/For_Piotr/new_labels/cells_labels_geojson"),
-            Path("/data/pwojcik/For_Piotr/new_images"),
-        ),
+        ("old",
+         Path("/data/pwojcik/For_Piotr/Labels/glom_labels"),
+         Path("/data/pwojcik/For_Piotr/Labels/cells_labels"),
+         Path("/data/pwojcik/For_Piotr/Images")),
+        ("new",
+         Path("/data/pwojcik/For_Piotr/new_images/ROIs_geojson"),
+         Path("/data/pwojcik/For_Piotr/new_labels/cells_labels_geojson"),
+         Path("/data/pwojcik/For_Piotr/new_images")),
     ]
 
     # Allowed image extensions in order of preference
@@ -324,7 +312,6 @@ if __name__ == "__main__":
     for tag, stem, gj, img, cells in pairs:
         cells_gdf = gpd.read_file(cells)
         if "classification" not in cells_gdf.columns:
-            # still include empty class if there are any cells
             if not cells_gdf.empty:
                 global_labels.add("")
             continue
@@ -337,7 +324,7 @@ if __name__ == "__main__":
     label_to_rgb = {lab: stable_rgb(lab) for lab in global_labels}
     print("Global labels:", [pretty_label(l) for l in global_labels])
 
-    # Save a SINGLE legend + JSON right now
+    # Save a SINGLE legend + JSON right now (in out_root)
     legend_png  = out_root / "legend_all_classes.png"
     legend_json = out_root / "label_map.json"
 
@@ -382,9 +369,9 @@ if __name__ == "__main__":
                 geojson_path=str(gj),
                 cells_geojson_path=str(cells),
                 ome_tiff_path=str(img),
-                out_root=str(out_root),
-                label_to_id=label_to_id,     # GLOBAL (mutable) mapping
-                label_to_rgb=label_to_rgb,   # GLOBAL (mutable) colors
+                out_root=str(out_root),     # single folder
+                label_to_id=label_to_id,
+                label_to_rgb=label_to_rgb,
                 overlay_alpha=128
             )
         except Exception as e:
