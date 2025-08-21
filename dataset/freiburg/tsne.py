@@ -109,8 +109,6 @@ def main():
     ap.add_argument("--max-per-class", type=int, default=0, help="Per-class cap; 0 = no cap")
     ap.add_argument("--max-total", type=int, default=0, help="Overall sample cap; 0 = no cap")
     ap.add_argument("--point-size", type=float, default=12.0, help="Marker size for t-SNE points")
-    ap.add_argument("--label-weight", type=float, default=0.05,
-                    help="Strength of label one-hot appended to features (0 disables)")
     ap.add_argument("--seed", type=int, default=0, help="Random seed")
     args = ap.parse_args()
 
