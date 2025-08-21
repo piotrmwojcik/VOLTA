@@ -34,31 +34,64 @@ class ResNet50Backbone(nn.Module):
         return x
 
 
-def load_dino_backbone_from_checkpoint(ckpt_path: str) -> ResNet50Backbone:
-    """
-    Loads the student BACKBONE weights from a DINO checkpoint into a torchvision resnet50,
-    and returns a feature extractor that outputs the spatial C5 map.
-    """
+
+def _get_student_state(ckpt):
+    # handle various save formats
+    if "student" in ckpt and isinstance(ckpt["student"], dict):
+        sd = ckpt["student"]
+        if "state_dict" in sd:  # some tools wrap again
+            sd = sd["state_dict"]
+    elif "state_dict" in ckpt:
+        sd = ckpt["state_dict"]
+    else:
+        sd = ckpt  # hope it's already a flat state_dict
+    return sd
+
+def _strip_prefixes(sd, prefixes=("module.", "student.", "model.")):
+    out = {}
+    for k, v in sd.items():
+        for p in prefixes:
+            if k.startswith(p):
+                k = k[len(p):]
+        out[k] = v
+    return out
+
+def _extract_backbone(sd):
+    """Return only backbone.* -> strip to resnet keys (conv1, bn1, layer1...)"""
+    bk = {}
+    for k, v in sd.items():
+        if k.startswith("backbone."):
+            k2 = k.split("backbone.", 1)[1]
+            bk[k2] = v
+    # If no backbone.* prefix, maybe already bare resnet keys
+    if not bk:
+        # detect ViT keys to fail early
+        if any(k.startswith(("pos_embed", "patch_embed", "blocks")) for k in sd.keys()):
+            raise RuntimeError("Checkpoint looks like ViT weights (has pos_embed/patch_embed). "
+                               "Load a ViT backbone instead of ResNet.")
+        # otherwise assume it's already resnet-style keys
+        bk = sd
+    return bk
+
+def load_dino_backbone_from_checkpoint(ckpt_path: str):
     ckpt = torch.load(ckpt_path, map_location="cpu")
-    # The checkpoint saved in the provided DINO script typically stores 'student' state_dict
-    state = ckpt.get("student", ckpt)
-    if "state_dict" in state:
-        state = state["state_dict"]
+    arch = (ckpt.get("args", {}) or {}).get("arch", "unknown")
+    print(f"[ckpt] arch in checkpoint: {arch}")
 
-    # Remove possible 'module.' prefix (from DDP) and select backbone.*
-    cleaned = {}
-    for k, v in state.items():
-        if k.startswith("module."):
-            k = k[len("module."):]
-        cleaned[k] = v
-    backbone_sd = {k[len("backbone."):]: v for k, v in cleaned.items() if k.startswith("backbone.")}
+    sd = _get_student_state(ckpt)
+    sd = _strip_prefixes(sd, prefixes=("module.", "student.", "model."))
+    bk = _extract_backbone(sd)
 
+    # build torchvision resnet50 backbone and load
     base = tv.resnet50(pretrained=False)
-    missing, unexpected = base.load_state_dict(backbone_sd, strict=False)
-    print(missing)
-    print(unexpected)
+    missing, unexpected = base.load_state_dict(bk, strict=False)
     print(f"[load] ResNet50 backbone <- checkpoint | missing={len(missing)} unexpected={len(unexpected)}")
-
+    # optional: print a few examples if there are many mismatches
+    if len(missing) > 0 or len(unexpected) > 0:
+        ex_m = ", ".join(missing[:5])
+        ex_u = ", ".join(unexpected[:5])
+        print(f"  examples missing: {ex_m}")
+        print(f"  examples unexpected: {ex_u}")
     return ResNet50Backbone(base)
 
 
