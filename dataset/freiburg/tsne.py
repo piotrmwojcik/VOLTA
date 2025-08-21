@@ -33,6 +33,15 @@ def main():
     if not npz_files:
         raise SystemExit(f"No *__roi_feats.npz found in {feats_dir}")
 
+    # ---- stats BEFORE subsampling ----
+    classes_full, counts_full = np.unique(y, return_counts=True)
+    order = np.argsort(-counts_full)
+    print("\n[stats] FULL set (before subsampling):")
+    for c, n in zip(classes_full[order], counts_full[order]):
+        print(f"  {c:<30} : {n}")
+    print(f"  {'TOTAL':<30} : {X.shape[0]}  |  classes: {len(classes_full)}\n")
+
+
     # ---- load & concatenate ----
     X_list, y_list, yid_list, src_img, cell_idx = [], [], [], [], []
     for f in npz_files:
