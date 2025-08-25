@@ -8,11 +8,10 @@ from torch.utils.data import DataLoader
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
-# ---- import your dataset class from wherever you saved it ----
-from your_module import PanNukeDataset  # <-- change to your actual import
-
 # ---- Albumentations transforms ----
 # Whole-image transform (applied to "image" only)
+from dataset.pannuke.dataset import PanNukeDataset
+
 img_transform = A.Compose([
     A.Resize(512, 512),
     A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
