@@ -88,6 +88,7 @@ def convert_patch_to_cells(in_img_path: str or np.ndarray, in_mask_path: str or 
 
     # get the cell locations in the label map
     cell_locations = ndimage.measurements.find_objects(instance_mask.astype(int))
+    print(cell_locations)
     if n_sample is not None:
         idex = list(range(len(cell_locations)))
         random.shuffle(idex)
