@@ -180,7 +180,7 @@ class MaskedEnvMoCo(nn.Module):
                 extra_feat2 = torch.cat([extra_feat2, extra_feat_queue.t()], dim=0)
 
         assert patch1 is not None
-        print('!!! ', patch1.size)
+        print('!!! ', patch1.shape)
         env = self.env_encoder(patch1)
         env = self.env_projection_head(env)
         env = nn.functional.normalize(env, dim=1)
