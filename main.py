@@ -952,6 +952,8 @@ def train(train_loader, model, criterion, optimizer, epoch, config, labeling_mod
     env_losses = AverageMeter('Loss', ':.4e')
     cell_losses = AverageMeter('Loss', ':.4e')
 
+    print('!!! ', len(train_loader))
+
     progress = ProgressMeter(
         len(train_loader),
         [batch_time, data_time, total_losses, cell_losses, env_losses],
