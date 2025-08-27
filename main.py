@@ -961,8 +961,8 @@ def train(train_loader, model, criterion, optimizer, epoch, config, labeling_mod
     model.train()
 
     end = time.time()
-    print('!!!! train')
     for i, (images, _, patch, slide_id, coordinates, mask, segmentation, extra_feat) in enumerate(train_loader):
+        print('!!!! train ', i)
         # measure data loading time
         data_time.update(time.time() - end)
 
