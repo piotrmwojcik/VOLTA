@@ -43,7 +43,7 @@ shared_caches = {
 #   Segmentation/   (per-image .npy instance-map used to create a binary segmentation for the patch)
 #   Embedding/      (optional, only if hovernet_enable=True)
 
-root_dir = "/data/pwojcik/Fold_2/"  # <-- change me
+root_dir = "/data/pwojcik/VOLTA/patch2cell/fold_2/"  # <-- change me
 
 ds = PanNukeDataset(
     root_dir=root_dir,
