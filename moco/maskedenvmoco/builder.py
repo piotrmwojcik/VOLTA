@@ -78,6 +78,7 @@ class MaskedEnvMoCo(nn.Module):
                 param_k.requires_grad = False  # not update by gradient
 
         if not self.shared_encoder:
+            print('not shared')
             self.env_encoder = env_encoder(num_classes=dim)
             env_dim = self.env_encoder.fc.in_features
             self.env_encoder.fc = nn.Identity()
@@ -179,6 +180,7 @@ class MaskedEnvMoCo(nn.Module):
                 extra_feat2 = torch.cat([extra_feat2, extra_feat_queue.t()], dim=0)
 
         assert patch1 is not None
+        print('!!! ', patch1.size)
         env = self.env_encoder(patch1)
         env = self.env_projection_head(env)
         env = nn.functional.normalize(env, dim=1)
