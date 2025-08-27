@@ -964,7 +964,6 @@ def train(train_loader, model, criterion, optimizer, epoch, config, labeling_mod
 
     end = time.time()
     for i, (images, _, patch, slide_id, coordinates, mask, segmentation, extra_feat) in enumerate(train_loader):
-        print(i, images[0].device, images[0].size)
         # measure data loading time
         data_time.update(time.time() - end)
 
@@ -986,6 +985,7 @@ def train(train_loader, model, criterion, optimizer, epoch, config, labeling_mod
                 patch[0] = patch[0].cuda(config['gpu'], non_blocking=True)
                 patch[1] = patch[1].cuda(config['gpu'], non_blocking=True)
 
+        print(i, images[0].device, images[0].size)
         # todo: refactor this
         # compute output
         (q1, q2), (k1, k2), (q_env_1, q_env_2, env), (key_slide_id, key_patch_coordinate), (extra_feat1, _), \
