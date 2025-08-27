@@ -181,6 +181,7 @@ class MaskedEnvMoCo(nn.Module):
 
         assert patch1 is not None
         print('!!! ', patch1.shape)
+        print(self.env_encoder)
         env = self.env_encoder(patch1)
         env = self.env_projection_head(env)
         env = nn.functional.normalize(env, dim=1)
