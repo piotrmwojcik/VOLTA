@@ -334,10 +334,10 @@ if __name__ == "__main__":
          Path("/data/pwojcik/For_Piotr/Labels/glom_labels"),
          Path("/data/pwojcik/For_Piotr/Labels/cells_labels"),
          Path("/data/pwojcik/For_Piotr/Images")),
-        ("new",
-         Path("/data/pwojcik/For_Piotr/new_images/ROIs_geojson"),
-         Path("/data/pwojcik/For_Piotr/new_labels/cells_labels_geojson"),
-         Path("/data/pwojcik/For_Piotr/new_images")),
+         #("new",
+         #Path("/data/pwojcik/For_Piotr/new_images/ROIs_geojson"),
+         #Path("/data/pwojcik/For_Piotr/new_labels/cells_labels_geojson"),
+         #Path("/data/pwojcik/For_Piotr/new_images")),
     ]
 
     # Allowed image extensions in order of preference
