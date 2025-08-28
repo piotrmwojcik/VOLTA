@@ -15,6 +15,10 @@ from rasterio.features import rasterize
 from rasterio.enums import MergeAlg
 from affine import Affine
 
+# ---- CONFIG: keep only channels whose metadata contains this substring ----
+FILTER_SUBSTRING = "PAS"   # case-insensitive match
+# --------------------------------------------------------------------------
+
 # Silence "NotGeoreferencedWarning" when working in pixel space
 warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
 
@@ -81,6 +85,28 @@ def world_geom_bounds_to_crop_bbox(geom, inv_transform, W, H):
     ys = [row0, row1, row2, row3]
     return clamp_xyxy_to_image(min(xs), min(ys), max(xs), max(ys), W, H)
 
+def _channel_text_blob(ds, sref: str) -> str:
+    """Collect text fields that may describe the subdataset/channel."""
+    parts = [str(sref)]
+    try:
+        parts.append(getattr(ds, "name", "") or "")
+    except Exception:
+        pass
+    try:
+        if getattr(ds, "descriptions", None):
+            parts.extend([d for d in ds.descriptions if d])
+    except Exception:
+        pass
+    try:
+        tags = ds.tags()
+        parts.extend([f"{k}={v}" for k, v in tags.items()])
+    except Exception:
+        pass
+    return " ".join(parts).lower()
+
+def _is_pas_channel(ds, sref: str) -> bool:
+    return FILTER_SUBSTRING.lower() in _channel_text_blob(ds, sref)
+
 # ----------------- core function -----------------
 def cut_rectangles_multich_with_overlay(
     dataset_tag,                # 'old' or 'new' (used in filename)
@@ -115,14 +141,28 @@ def cut_rectangles_multich_with_overlay(
         subdatasets = src0.subdatasets
         if not subdatasets:
             raise RuntimeError(f"No subdatasets found in {ome_tiff_path}. Is this an OME-TIFF?")
+
     subdatasets = sort_gtiff_dirs(subdatasets)
-    datasets = [rasterio.open(sref) for sref in subdatasets]
+
+    # open ONLY PAS channels
+    datasets = []
+    kept_refs = []
+    for sref in subdatasets:
+        ds = rasterio.open(sref)
+        if _is_pas_channel(ds, sref):
+            datasets.append(ds)
+            kept_refs.append(sref)
+        else:
+            ds.close()
+
+    if not datasets:
+        raise RuntimeError(f"No PAS channels found in {ome_tiff_path}.")
 
     try:
         first = datasets[0]
         print(f"\n[{dataset_tag}] Processing {tiff_stem}")
-        print("  Channels (subdatasets):", len(datasets))
-        print("  CRS (first sds):", first.crs)
+        print(f"  Subdatasets total: {len(subdatasets)} | kept PAS: {len(datasets)}")
+        print("  CRS (first kept sds):", first.crs)
 
         # GEO vs PIXEL mode
         geo_mode = (first.crs is not None) and (gdf.crs is not None)
@@ -149,7 +189,7 @@ def cut_rectangles_multich_with_overlay(
             target_shape = None
             win_for_cells = None
 
-            # Read same window from each channel
+            # Read same window from each kept PAS channel
             for ds in datasets:
                 if geo_mode:
                     win = from_bounds(minx, miny, maxx, maxy, transform=ds.transform)
@@ -198,7 +238,7 @@ def cut_rectangles_multich_with_overlay(
 
             # Raster of class ids (0 bg), **inside glomerulus only**
             label_raster = np.zeros((H, W), dtype=np.int32)
-            bbox_records = []  # ---- collect cell bboxes for this crop ----
+            bbox_records = []  # collect cell bboxes for this crop
 
             if cells_sindex is not None:
                 if geo_mode:
@@ -220,10 +260,10 @@ def cut_rectangles_multich_with_overlay(
                                 label_to_rgb[lab] = stable_rgb(lab)
                             shapes.append((gi, label_to_id[lab]))
                             # bbox in crop pixel coords via inverse transform
-                            x, y, w, h = world_geom_bounds_to_crop_bbox(gi, invT, W, H)
-                            if w > 0 and h > 0:
+                            x_, y_, w_, h_ = world_geom_bounds_to_crop_bbox(gi, invT, W, H)
+                            if w_ > 0 and h_ > 0:
                                 bbox_records.append({
-                                    "bbox": [x, y, w, h],
+                                    "bbox": [x_, y_, w_, h_],
                                     "label": lab,
                                     "label_id": label_to_id[lab],
                                 })
@@ -258,12 +298,11 @@ def cut_rectangles_multich_with_overlay(
                                     label_to_id[lab] = new_id
                                     label_to_rgb[lab] = stable_rgb(lab)
                                 shapes.append((gi, label_to_id[lab]))
-                                # gi is already in crop pixel space
                                 gx0, gy0, gx1, gy1 = gi.bounds
-                                x, y, w, h = clamp_xyxy_to_image(gx0, gy0, gx1, gy1, W, H)
-                                if w > 0 and h > 0:
+                                x_, y_, w_, h_ = clamp_xyxy_to_image(gx0, gy0, gx1, gy1, W, H)
+                                if w_ > 0 and h_ > 0:
                                     bbox_records.append({
-                                        "bbox": [x, y, w, h],
+                                        "bbox": [x_, y_, w_, h_],
                                         "label": lab,
                                         "label_id": label_to_id[lab],
                                     })
@@ -305,9 +344,8 @@ def cut_rectangles_multich_with_overlay(
 
             rgb_img.save(crop_png)
             out_overlay.convert("RGB").save(overlay_png)
-            mask_img.save(mask_png)  # <-- NEW: binary cell mask
+            mask_img.save(mask_png)
 
-            # ---- save JSON with bounding boxes ----
             with open(json_path, "w") as f:
                 json.dump({
                     "image": crop_png.name,
@@ -325,7 +363,7 @@ def cut_rectangles_multich_with_overlay(
 # ----------------- batch runner (COMBINES BOTH DATASETS) -----------------
 if __name__ == "__main__":
     # Output root (shared single folder)
-    out_root = Path("/data/pwojcik/For_Piotr/gloms_rect_test2")
+    out_root = Path("/data/pwojcik/For_Piotr/gloms_rect_only_PAS")
     out_root.mkdir(parents=True, exist_ok=True)
 
     # Dataset groups: (tag, labels_dir, cells_dir, images_dir)
@@ -334,16 +372,13 @@ if __name__ == "__main__":
          Path("/data/pwojcik/For_Piotr/Labels/glom_labels"),
          Path("/data/pwojcik/For_Piotr/Labels/cells_labels"),
          Path("/data/pwojcik/For_Piotr/Images")),
-         #("new",
-         #Path("/data/pwojcik/For_Piotr/new_images/ROIs_geojson"),
-         #Path("/data/pwojcik/For_Piotr/new_labels/cells_labels_geojson"),
-         #Path("/data/pwojcik/For_Piotr/new_images")),
+        # add more tuples if needed
     ]
 
     # Allowed image extensions in order of preference
     exts = [".ome.tiff", ".ome.tif", ".tif", ".tiff"]
 
-    def find_image_for(stem: str, images_dir: Path) -> Path:
+    def find_image_for(stem: str, images_dir: Path):
         for ext in exts:
             cand = images_dir / f"{stem}{ext}"
             if cand.exists():
@@ -354,7 +389,7 @@ if __name__ == "__main__":
                     return p
         return None
 
-    def find_cells_for(stem: str, cells_dir: Path) -> Path:
+    def find_cells_for(stem: str, cells_dir: Path):
         cand = cells_dir / f"{stem}.geojson"
         if cand.exists():
             return cand
@@ -450,35 +485,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[ERROR {tag}] {stem}: {e}")
 
-    # If new labels appeared mid-run, refresh legend to include them
-    if len(label_to_id) != mapping_len_before:
-        global_labels = sorted(label_to_id.keys())
-        try:
-            sw, pad = 18, 8
-            H_leg = pad*2 + (len(global_labels)+1)*sw
-            W_leg = 640
-            leg = Image.new("RGB", (W_leg, H_leg), (255, 255, 255))
-            drw = ImageDraw.Draw(leg)
-            y = pad
-            drw.text((pad, y), "Legend (annotation name → color)", fill=(0,0,0))
-            y += sw
-            for lab in global_labels:
-                color = label_to_rgb[lab]
-                drw.rectangle([pad, y, pad+sw, y+sw], fill=color)
-                drw.text((pad+sw+8, y+2), pretty_label(lab), fill=(0,0,0))
-                y += sw
-            leg.save(legend_png)
-            with open(legend_json, "w") as f:
-                json.dump(
-                    {
-                        "labels": global_labels,
-                        "label_to_id": label_to_id,
-                        "label_to_rgb": {k: list(v) for k, v in label_to_rgb.items()},
-                        "note": "0 = background; colors are deterministic per label"
-                    },
-                    f,
-                    indent=2
-                )
-            print(f"[LEGEND] Updated global legend with newly seen labels.")
-        except Exception as e:
-            print(f"[WARN] Could not update legend: {e}")
+    # If new labels appeared mid-run, you could rebuild the legend here.
