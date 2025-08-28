@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import geopandas as gpd
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, DecompressionBombWarning
 from shapely.geometry import box
 from shapely.affinity import translate
 
@@ -13,6 +13,8 @@ from rasterio.features import rasterize
 from rasterio.enums import MergeAlg
 from affine import Affine
 
+Image.MAX_IMAGE_PIXELS = None
+warnings.simplefilter("ignore", DecompressionBombWarning)
 
 # ----------------- helpers -----------------
 def extract_annotation_name(value):
