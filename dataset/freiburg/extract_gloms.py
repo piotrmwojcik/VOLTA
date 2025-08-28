@@ -325,7 +325,7 @@ def cut_rectangles_multich_with_overlay(
 # ----------------- batch runner (COMBINES BOTH DATASETS) -----------------
 if __name__ == "__main__":
     # Output root (shared single folder)
-    out_root = Path("/data/pwojcik/For_Piotr/gloms_rect_test")
+    out_root = Path("/data/pwojcik/For_Piotr/gloms_rect_test2")
     out_root.mkdir(parents=True, exist_ok=True)
 
     # Dataset groups: (tag, labels_dir, cells_dir, images_dir)
