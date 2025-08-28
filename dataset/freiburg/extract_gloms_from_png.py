@@ -5,7 +5,8 @@ from pathlib import Path
 import numpy as np
 import geopandas as gpd
 import warnings
-from PIL import Image, ImageDraw, DecompressionBombWarning
+from PIL import Image, ImageDraw
+from PIL.Image import DecompressionBombWarning  # <-- correct place
 from shapely.geometry import box
 from shapely.affinity import translate
 
