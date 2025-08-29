@@ -49,6 +49,56 @@ def sort_gtiff_dirs(slist):
         return int(m.group(1)) if m else 0
     return sorted(slist, key=dir_index)
 
+# --- OME channel helpers ------------------------------------------------------
+def get_ome_channel_names(tiff_path):
+    """
+    Return channel names (order of C in OME) or None if not available.
+    """
+    try:
+        from tifffile import TiffFile
+    except Exception:
+        return None
+
+    with TiffFile(str(tiff_path)) as tf:
+        xml = tf.ome_metadata
+
+    if not xml:
+        return None
+
+    # Nice parse if ome-types is present
+    try:
+        from ome_types import from_xml
+        ome = from_xml(xml)
+        chans = ome.images[0].pixels.channels
+        return [(ch.name or f"C{i+1}") for i, ch in enumerate(chans)]
+    except Exception:
+        pass
+
+    # Fallback: regex the Channel Name=""
+    import re
+    names = re.findall(r'<Channel[^>]*\bName="([^"]*)"', xml)
+    return names or None
+
+
+def get_fullres_subdatasets(tiff_path):
+    """
+    Return a list of rasterio subdataset refs that are full resolution
+    (i.e. with max width & height; excludes overviews/pyramid levels).
+    Keeps the original GTIFF_DIR order.
+    """
+    with rasterio.open(str(tiff_path)) as src0:
+        srefs = sort_gtiff_dirs(src0.subdatasets)
+    if not srefs:
+        return []
+
+    sizes = []
+    for sref in srefs:
+        with rasterio.open(sref) as ds:
+            sizes.append((sref, ds.width, ds.height))
+    max_w = max(w for _, w, _ in sizes)
+    max_h = max(h for _, _, h in sizes)
+    return [s for s, w, h in sizes if w == max_w and h == max_h]
+
 def clamp_xyxy_to_image(x0, y0, x1, y1, W, H):
     x0 = max(0.0, min(float(x0), W))
     y0 = max(0.0, min(float(y0), H))
@@ -144,21 +194,44 @@ def cut_rectangles_multich_with_overlay(
 
     subdatasets = sort_gtiff_dirs(subdatasets)
 
-    # open ONLY PAS channels
+    # --- open ONLY PAS channels (by OME channel name; full-resolution only) ---
+    # all refs (for reporting)
+    all_refs = subdatasets
+
+    # full-res subdatasets (exclude overviews)
+    fullres_refs = get_fullres_subdatasets(ome_tiff_path)
+    if not fullres_refs:
+        raise RuntimeError(f"No full-resolution subdatasets found in {ome_tiff_path}")
+
+    # OME channel names in order; align length with full-res refs
+    chan_names = get_ome_channel_names(ome_tiff_path)
+    if chan_names is None:
+        # fallback placeholders if OME names are missing
+        chan_names = [f"C{i + 1}" for i in range(len(fullres_refs))]
+
+    # pad/truncate so zip has 1:1
+    if len(chan_names) < len(fullres_refs):
+        chan_names = chan_names + [f"C{i + 1}" for i in range(len(chan_names) + 1, len(fullres_refs) + 1)]
+    elif len(chan_names) > len(fullres_refs):
+        chan_names = chan_names[:len(fullres_refs)]
+
+    # keep only channels whose NAME contains FILTER_SUBSTRING (e.g., "PAS")
     datasets = []
-    kept_refs = []
-    for sref in subdatasets:
-        ds = rasterio.open(sref)
-        if _is_pas_channel(ds, sref):
-            print('!!! ', sref)
-            datasets.append(ds)
-            kept_refs.append(sref)
-        else:
-            ds.close()
+    kept = []  # (name, sref)
+    for name, sref in zip(chan_names, fullres_refs):
+        if FILTER_SUBSTRING.lower() in (name or "").lower():
+            datasets.append(rasterio.open(sref))
+            kept.append((name, sref))
 
     if not datasets:
-        raise RuntimeError(f"No PAS channels found in {ome_tiff_path}.")
+        raise RuntimeError(f"No {FILTER_SUBSTRING!r} channels found in {ome_tiff_path}")
 
+    print(
+        f"  Subdatasets total: {len(all_refs)} | full-res: {len(fullres_refs)} | kept {FILTER_SUBSTRING}: {len(datasets)}")
+    print("  Kept channels:")
+    for nm, rf in kept:
+        print(f"    - {nm} :: {rf}")
+    # --------------------------------------------------------------------------
     try:
         first = datasets[0]
         print(f"\n[{dataset_tag}] Processing {tiff_stem}")
