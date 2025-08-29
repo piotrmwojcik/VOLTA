@@ -150,6 +150,7 @@ def cut_rectangles_multich_with_overlay(
     for sref in subdatasets:
         ds = rasterio.open(sref)
         if _is_pas_channel(ds, sref):
+            print('!!! ', sref)
             datasets.append(ds)
             kept_refs.append(sref)
         else:
