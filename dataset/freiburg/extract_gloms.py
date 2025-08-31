@@ -49,6 +49,13 @@ def sort_gtiff_dirs(slist):
         return int(m.group(1)) if m else 0
     return sorted(slist, key=dir_index)
 
+def safe_label_folder(lab: str) -> str:
+    """Sanitize label for filesystem folder name; empty -> '_empty'."""
+    lab = (lab or "").strip()
+    lab = lab if lab else "_empty"
+    lab = re.sub(r"[^A-Za-z0-9_.\-]+", "_", lab)
+    return lab[:80]
+
 # --- OME channel helpers ------------------------------------------------------
 def get_ome_channel_names(tiff_path):
     """
@@ -172,6 +179,9 @@ def cut_rectangles_multich_with_overlay(
     # ---- Single shared folder for ALL outputs ----
     out_dir = Path(out_root)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # ---- Root folder for per-cell crops grouped by type ----
+    cells_root = out_dir / "cells"
+    cells_root.mkdir(parents=True, exist_ok=True)
 
     tiff_stem = Path(ome_tiff_path).stem
     prefix = f"{dataset_tag}__{tiff_stem}"
@@ -195,18 +205,13 @@ def cut_rectangles_multich_with_overlay(
     subdatasets = sort_gtiff_dirs(subdatasets)
 
     # --- open ONLY PAS channels (by OME channel name; full-resolution only) ---
-    # all refs (for reporting)
     all_refs = subdatasets
-
-    # full-res subdatasets (exclude overviews)
     fullres_refs = get_fullres_subdatasets(ome_tiff_path)
     if not fullres_refs:
         raise RuntimeError(f"No full-resolution subdatasets found in {ome_tiff_path}")
 
-    # OME channel names in order; align length with full-res refs
     chan_names = get_ome_channel_names(ome_tiff_path)
     if chan_names is None:
-        # fallback placeholders if OME names are missing
         chan_names = [f"C{i + 1}" for i in range(len(fullres_refs))]
 
     # pad/truncate so zip has 1:1
@@ -215,7 +220,6 @@ def cut_rectangles_multich_with_overlay(
     elif len(chan_names) > len(fullres_refs):
         chan_names = chan_names[:len(fullres_refs)]
 
-    # keep only channels whose NAME contains FILTER_SUBSTRING (e.g., "PAS")
     datasets = []
     kept = []  # (name, sref)
     for name, sref in zip(chan_names, fullres_refs):
@@ -428,7 +432,28 @@ def cut_rectangles_multich_with_overlay(
                     "boxes": bbox_records
                 }, f, indent=2)
 
-            print(f"  Saved: {crop_png.name}, {overlay_png.name}, {mask_png.name}, {json_path.name}")
+            # --- also save per-cell crops grouped by type ---
+            num_cells_saved = 0
+            for ci, rec in enumerate(bbox_records):
+                x, y, w, h = rec["bbox"]
+                lab = rec.get("label", "")
+                lab_dir = cells_root / safe_label_folder(lab)
+                lab_dir.mkdir(parents=True, exist_ok=True)
+
+                # Crop from the ROI RGB image (already normalized to 0..255)
+                if w <= 0 or h <= 0:
+                    continue
+                patch = rgb_img.crop((int(x), int(y), int(x + w), int(y + h)))
+
+                # OPTIONAL: to force a specific size, uncomment:
+                # patch = patch.resize((64, 64), Image.BILINEAR)
+
+                cell_name = f"{prefix}__polygon_{i:04d}__cell_{ci:05d}.png"
+                patch.save(lab_dir / cell_name)
+                num_cells_saved += 1
+
+            print(f"  Saved: {crop_png.name}, {overlay_png.name}, {mask_png.name}, {json_path.name}"
+                  f"{' + '+str(num_cells_saved)+' cell crops' if num_cells_saved else ''}")
 
     finally:
         for ds in datasets:
@@ -542,7 +567,6 @@ if __name__ == "__main__":
         print(f"[WARN] Could not save global legend: {e}")
 
     # ---------- SECOND PASS: process all cases using GLOBAL mappings ----------
-    mapping_len_before = len(label_to_id)
     for tag, stem, gj, img, cells in pairs:
         try:
             cut_rectangles_multich_with_overlay(
