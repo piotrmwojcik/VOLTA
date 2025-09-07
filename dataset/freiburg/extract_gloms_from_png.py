@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, re, hashlib, warnings
+import json, hashlib, warnings
 from pathlib import Path
 
 import numpy as np
@@ -22,7 +22,8 @@ def extract_annotation_name(value):
     if value is None:
         return ""
     try:
-        if isinstance(value, float) and np.isnan(value):
+        import numpy as _np
+        if isinstance(value, float) and _np.isnan(value):
             return ""
     except Exception:
         pass
@@ -31,7 +32,12 @@ def extract_annotation_name(value):
         return str(name).strip()
     return str(value).strip()
 
+def normalize_label(lab: str) -> str:
+    lab = (lab or "").strip().lower().replace(" ", "_")
+    return lab if lab else "_empty"
+
 def stable_rgb(label_str: str):
+    # deterministic color from normalized label
     h = hashlib.md5(label_str.encode("utf-8")).digest()
     return (h[0], h[1], h[2])
 
@@ -65,8 +71,6 @@ def cut_rectangles_png_with_overlay(
     cells_geojson_path,
     png_path,
     out_root,
-    label_to_id,
-    label_to_rgb,
     overlay_alpha=128
 ):
     out_dir = Path(out_root)
@@ -107,8 +111,12 @@ def cut_rectangles_png_with_overlay(
         crop = img.crop((x, y, x + w, y + h))
         W, H = w, h
 
-        label_raster = np.zeros((H, W), dtype=np.int32)
+        # Binary raster (inside-ROI cells only)
+        label_raster = np.zeros((H, W), dtype=np.uint8)
         bbox_records = []
+
+        # For colored overlay without numeric ids, keep label->list_of_geoms in crop coords
+        per_label_geoms = {}
 
         if cells_sindex is not None:
             # Shift glomerulus into crop coords, clip to crop box
@@ -121,61 +129,63 @@ def cut_rectangles_png_with_overlay(
                     # strict containment in original (full-image) space
                     cand = cand[cand.geometry.centroid.within(glom_geom)]
 
-                    shapes = []
-                    for g, lab in zip(cand.geometry, cand["_label"]):
+                    for g, raw_lab in zip(cand.geometry, cand["_label"]):
                         if g is None or g.is_empty:
                             continue
                         # shift cell polygon to crop coords and clip to crop box
                         g2 = translate(g, xoff=-x, yoff=-y).intersection(box(0, 0, W, H))
-                        if g2.is_empty:
-                            continue
-                        # keep ONLY cells fully inside the (shifted) glomerulus
-                        if not g2.within(glom_shifted):
+                        if g2.is_empty or (not g2.within(glom_shifted)):
                             continue
 
-                        if lab not in label_to_id:
-                            new_id = max(label_to_id.values(), default=0) + 1
-                            label_to_id[lab] = new_id
-                            label_to_rgb[lab] = stable_rgb(lab)
+                        lab = normalize_label(raw_lab)
+                        per_label_geoms.setdefault(lab, []).append(g2)
 
-                        shapes.append((g2, label_to_id[lab]))
-
-                        # bbox in crop pixel space (of the full cell polygon g2)
+                        # bbox in crop pixel space
                         gx0, gy0, gx1, gy1 = g2.bounds
                         bx, by, bw, bh = clamp_xyxy_to_image(gx0, gy0, gx1, gy1, W, H)
                         if bw > 0 and bh > 0:
                             bbox_records.append({
                                 "bbox": [bx, by, bw, bh],
                                 "label": lab,
-                                "label_id": label_to_id[lab],
                             })
 
-                    if shapes:
-                        label_raster = rasterize(
-                            shapes=shapes,
-                            out_shape=(H, W),
-                            transform=Affine.identity(),
-                            fill=0,
-                            default_value=0,
-                            dtype="int32",
-                            merge_alg=MergeAlg.replace
-                        )
+        # ---- build binary mask (union of all per-label shapes) ----
+        all_shapes = [(geom, 1) for geoms in per_label_geoms.values() for geom in geoms]
+        if all_shapes:
+            label_raster = rasterize(
+                shapes=all_shapes,
+                out_shape=(H, W),
+                transform=Affine.identity(),
+                fill=0,
+                default_value=0,
+                dtype="uint8",
+                merge_alg=MergeAlg.replace
+            )
 
-        # ---- binary mask: cells white (255), background black (0) ----
         bin_mask = (label_raster > 0).astype(np.uint8) * 255
         mask_img = Image.fromarray(bin_mask, mode="L")
 
-        # ---- colored overlay ----
+        # ---- colored overlay (per label, no numeric ids) ----
         overlay_rgba = np.zeros((H, W, 4), dtype=np.uint8)
-        for lab, val in label_to_id.items():
-            m = (label_raster == val)
-            if not np.any(m):
-                continue
-            r, g, b = label_to_rgb[lab]
-            overlay_rgba[m, 0] = r
-            overlay_rgba[m, 1] = g
-            overlay_rgba[m, 2] = b
-            overlay_rgba[m, 3] = overlay_alpha
+        if per_label_geoms:
+            for lab, geoms in per_label_geoms.items():
+                tmp = rasterize(
+                    shapes=[(g, 1) for g in geoms],
+                    out_shape=(H, W),
+                    transform=Affine.identity(),
+                    fill=0,
+                    default_value=0,
+                    dtype="uint8",
+                    merge_alg=MergeAlg.replace
+                )
+                m = tmp.astype(bool)
+                if not np.any(m):
+                    continue
+                r, g_, b = stable_rgb(lab)
+                overlay_rgba[m, 0] = r
+                overlay_rgba[m, 1] = g_
+                overlay_rgba[m, 2] = b
+                overlay_rgba[m, 3] = overlay_alpha
 
         rgba_crop = crop.convert("RGBA")
         out_overlay = Image.alpha_composite(rgba_crop, Image.fromarray(overlay_rgba, mode="RGBA"))
@@ -250,23 +260,21 @@ if __name__ == "__main__":
         print("No matching (ROI, PNG, cells) triplets found across datasets.")
         raise SystemExit(1)
 
-    # FIRST PASS: global label map
+    # FIRST PASS: collect global normalized labels (for legend only)
     global_labels = set()
     for tag, stem, gj, img, cells in pairs:
         cells_gdf = gpd.read_file(cells)
         if "classification" not in cells_gdf.columns:
             if not cells_gdf.empty:
-                global_labels.add("")
+                global_labels.add("_empty")
             continue
         for lab in cells_gdf["classification"].map(extract_annotation_name):
-            global_labels.add("" if lab is None else str(lab))
+            global_labels.add(normalize_label("" if lab is None else str(lab)))
 
     global_labels = sorted(global_labels)
-    label_to_id  = {lab: i + 1 for i, lab in enumerate(global_labels)}
-    label_to_rgb = {lab: stable_rgb(lab) for lab in global_labels}
     print("Global labels:", [pretty_label(l) for l in global_labels])
 
-    # Legend
+    # Legend (normalized labels with deterministic colors)
     legend_png  = out_root / "legend_all_classes.png"
     legend_json = out_root / "label_map.json"
     try:
@@ -276,10 +284,10 @@ if __name__ == "__main__":
         leg = Image.new("RGB", (W_leg, H_leg), (255, 255, 255))
         drw = ImageDraw.Draw(leg)
         y = pad
-        drw.text((pad, y), "Legend (annotation name → color)", fill=(0,0,0))
+        drw.text((pad, y), "Legend (normalized label → color)", fill=(0,0,0))
         y += sw
         for lab in global_labels:
-            color = label_to_rgb[lab]
+            color = stable_rgb(lab)
             drw.rectangle([pad, y, pad+sw, y+sw], fill=color)
             drw.text((pad+sw+8, y+2), pretty_label(lab), fill=(0,0,0))
             y += sw
@@ -288,9 +296,8 @@ if __name__ == "__main__":
             json.dump(
                 {
                     "labels": global_labels,
-                    "label_to_id": label_to_id,
-                    "label_to_rgb": {k: list(v) for k, v in label_to_rgb.items()},
-                    "note": "0 = background; colors are deterministic per label"
+                    "label_to_rgb": {lab: list(stable_rgb(lab)) for lab in global_labels},
+                    "note": "colors are deterministic per normalized label"
                 },
                 f,
                 indent=2
@@ -301,7 +308,6 @@ if __name__ == "__main__":
         print(f"[WARN] Could not save global legend: {e}")
 
     # SECOND PASS: process cases
-    mapping_len_before = len(label_to_id)
     for tag, stem, gj, img, cells in pairs:
         try:
             cut_rectangles_png_with_overlay(
@@ -311,13 +317,7 @@ if __name__ == "__main__":
                 cells_geojson_path=str(cells),
                 png_path=str(img),
                 out_root=str(out_root),
-                label_to_id=label_to_id,
-                label_to_rgb=label_to_rgb,
                 overlay_alpha=128
             )
         except Exception as e:
             print(f"[ERROR {tag}] {stem}: {e}")
-
-    if len(label_to_id) != mapping_len_before:
-        # (rebuild legend if new labels appeared mid-run)
-        pass
