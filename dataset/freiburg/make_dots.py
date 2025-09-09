@@ -101,10 +101,9 @@ def main():
 
         #img_path = (IMAGE_ROOT / rel_img_path).resolve()
         img_path = os.path.join(IMAGE_ROOT, rel_img_path)
-        if not img_path.exists():
+        if not os.path.exists(img_path):
             print(f"[SKIP] Missing image: {img_path}")
             continue
-
         try:
             img = Image.open(img_path).convert("RGB")
         except Exception as e:
