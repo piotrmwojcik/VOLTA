@@ -14,7 +14,7 @@ LEGEND_BG_ALPHA = 160
 
 # Optional fixed colors for your 6 labels (fallback to hash-colors if a class isn't listed)
 FIXED_COLORS = {
-    "_empty":       (160, 160, 160),  # gray
+    "_empty":       (0, 0, 0),  # gray
     "opal_480":     ( 55, 126, 184),  # blue
     "opal_520":     ( 77, 175,  74),  # green
     "opal_570":     (228,  26,  28),  # red
