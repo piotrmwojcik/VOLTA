@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os.path
 import random
 from pathlib import Path
 
@@ -98,7 +99,8 @@ def main():
         rel_img_path = key  # e.g. "datasets/pannuke/Images/1_1047.png"
         points_per_class = combo[key]
 
-        img_path = (IMAGE_ROOT / rel_img_path).resolve()
+        #img_path = (IMAGE_ROOT / rel_img_path).resolve()
+        img_path = os.path.join(IMAGE_ROOT, rel_img_path)
         if not img_path.exists():
             print(f"[SKIP] Missing image: {img_path}")
             continue
