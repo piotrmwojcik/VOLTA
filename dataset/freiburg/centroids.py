@@ -58,7 +58,7 @@ def main():
             pt = bbox_center(bx, by, bw, bh, W, H)
             points[cls_idx].append(pt)
 
-        key = f"{IMG_KEY_PREFIX}{img_name}"
+        key = f"{IMG_KEY_PREFIX}/{img_name}"
         out[key] = points
 
     with open(OUT_PATH, "w") as f:
