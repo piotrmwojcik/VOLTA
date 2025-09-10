@@ -74,6 +74,7 @@ def main():
             print(f"[SKIP] Failed to open {img_path}: {e}")
             continue
 
+        # ---------- build points per class (unchanged) ----------
         points_per_class = [[] for _ in CLASSES]
         for rec in data.get("boxes", []):
             bbox = rec.get("bbox") or []
@@ -88,22 +89,61 @@ def main():
             cls_idx = CLASSES.index(lab)
             points_per_class[cls_idx].append([cx, cy])
 
+        # ---------- split image into 4 crops (existing logic) ----------
         crops, quad_points = split_and_remap_points(img, points_per_class)
 
+        # We'll reuse the exact same boxes to crop the mask, so compute them here too
+        W, H = img.size
+        mx, my = W // 2, H // 2
+        boxes = {
+            'q00': (0,    0,    mx,   my),   # top-left
+            'q01': (mx,   0,    W,    my),   # top-right
+            'q10': (0,    my,   mx,   H),    # bottom-left
+            'q11': (mx,   my,   W,    H),    # bottom-right
+        }
+
         stem = img_path.stem
+
+        # ---------- NEW: locate and crop the corresponding type-mask ----------
+        mask_name = f"{stem}__type-mask.png"
+        mask_path = IN_DIR / mask_name
+        mask = None
+        if mask_path.exists():
+            try:
+                # Keep original mode (likely "P"); don't convert, to preserve class IDs and palette
+                mask = Image.open(mask_path)
+                if mask.size != (W, H):
+                    print(f"[WARN] Mask size {mask.size} != image size {(W, H)} for {mask_path.name}")
+            except Exception as e:
+                print(f"[WARN] Failed to open mask {mask_path}: {e}")
+                mask = None
+        else:
+            print(f"[WARN] No type-mask found for {stem} (expected {mask_path.name})")
+
+        # ---------- save crops + (optionally) mask crops ----------
         for qk, crop_img in crops.items():
             out_img_name = f"{stem}__{qk}.png"
             out_img_path = IN_DIR / out_img_name
             crop_img.save(out_img_path)
 
+            # If we have a mask, crop with the exact same box and save alongside
+            if mask is not None:
+                box = boxes[qk]
+                mask_crop = mask.crop(box)
+                out_mask_name = f"{stem}__{qk}__type-mask.png"
+                out_mask_path = IN_DIR / out_mask_name
+                # Save without conversion to keep palette + class IDs intact
+                mask_crop.save(out_mask_path)
+
             out_key = f"{IMG_KEY_PREFIX}/{out_img_name}"
             out_dict[out_key] = quad_points[qk]
 
-        print(f"[OK] {img_path} -> 4 crops")
+        print(f"[OK] {img_path} -> 4 crops" + (" + mask crops" if mask is not None else ""))
 
     with open(OUT_PATH, "w") as f:
         json.dump(out_dict, f, indent=2)
     print(f"[DONE] Wrote {OUT_PATH} with {len(out_dict)-1} images.")
+
 
 if __name__ == "__main__":
     main()
