@@ -242,7 +242,7 @@ def cut_rectangles_png_with_overlay(
                 "boxes": bbox_records
             }, f, indent=2)
 
-        print(f"  Saved: {crop_png.name}, {overlay_png.name}, {mask_png.name}, {json_path.name}")
+        print(f"  Saved: {crop_png.name}, {overlay_png.name}, {type_mask_png.name}, {json_path.name}")
 
 
 # ----------------- batch runner (PNG) -----------------
