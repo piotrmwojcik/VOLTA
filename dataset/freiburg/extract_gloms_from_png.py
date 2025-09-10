@@ -17,6 +17,23 @@ from affine import Affine
 Image.MAX_IMAGE_PIXELS = None
 warnings.simplefilter("ignore", DecompressionBombWarning)
 
+
+CLASSES = [
+    "_empty",       # 0
+    "opal_480",     # 1
+    "opal_520",     # 2
+    "opal_570",     # 3
+    "unclassified", # 4
+    "opal_620",     # 5
+]
+LABEL_TO_ID = {name: i for i, name in enumerate(CLASSES)}
+
+def map_to_known_class(norm_lab: str) -> str:
+    """Normalize → map unknown labels to 'unclassified' (except '_empty')."""
+    if norm_lab in CLASSES:
+        return norm_lab
+    return "_empty" if norm_lab == "_empty" else "unclassified"
+
 # ----------------- helpers -----------------
 def extract_annotation_name(value):
     if value is None:
@@ -137,7 +154,7 @@ def cut_rectangles_png_with_overlay(
                         if g2.is_empty or (not g2.within(glom_shifted)):
                             continue
 
-                        lab = normalize_label(raw_lab)
+                        lab = map_to_known_class(normalize_label(raw_lab))
                         per_label_geoms.setdefault(lab, []).append(g2)
 
                         # bbox in crop pixel space
@@ -150,20 +167,37 @@ def cut_rectangles_png_with_overlay(
                             })
 
         # ---- build binary mask (union of all per-label shapes) ----
-        all_shapes = [(geom, 1) for geoms in per_label_geoms.values() for geom in geoms]
-        if all_shapes:
-            label_raster = rasterize(
-                shapes=all_shapes,
+        if per_label_geoms:
+            shapes_with_values = [
+                (geom, LABEL_TO_ID[label])
+                for label, geoms in per_label_geoms.items()
+                for geom in geoms
+            ]
+            type_raster = rasterize(
+                shapes=shapes_with_values,
                 out_shape=(H, W),
                 transform=Affine.identity(),
-                fill=0,
+                fill=0,  # background = "_empty"
                 default_value=0,
                 dtype="uint8",
                 merge_alg=MergeAlg.replace
             )
+        else:
+            type_raster = np.zeros((H, W), dtype=np.uint8)
 
-        bin_mask = (label_raster > 0).astype(np.uint8) * 255
-        mask_img = Image.fromarray(bin_mask, mode="L")
+        # Optional: palette PNG for visualization (values remain class IDs 0..5)
+        palette = [
+            0, 0, 0,  # 0: _empty
+            66, 135, 245,  # 1: opal_480
+            40, 167, 69,  # 2: opal_520
+            255, 193, 7,  # 3: opal_570
+            220, 53, 69,  # 4: unclassified
+            111, 66, 193,  # 5: opal_620
+        ]
+        palette += [0, 0, 0] * (256 - len(CLASSES))  # pad
+
+        type_mask_img = Image.fromarray(type_raster, mode="P")
+        type_mask_img.putpalette(palette)
 
         # ---- colored overlay (per label, no numeric ids) ----
         overlay_rgba = np.zeros((H, W, 4), dtype=np.uint8)
@@ -193,12 +227,12 @@ def cut_rectangles_png_with_overlay(
         # Save outputs
         crop_png    = out_dir / f"{prefix}__polygon_{i:04d}.png"
         overlay_png = out_dir / f"{prefix}__polygon_{i:04d}__overlay.png"
-        mask_png    = out_dir / f"{prefix}__polygon_{i:04d}__mask.png"
+        type_mask_png = out_dir / f"{prefix}__polygon_{i:04d}__type-mask.png"
         json_path   = out_dir / f"{prefix}__polygon_{i:04d}__bboxes.json"
 
         crop.save(crop_png)
         out_overlay.convert("RGB").save(overlay_png)
-        mask_img.save(mask_png)
+        type_mask_img.save(type_mask_png)
 
         with open(json_path, "w") as f:
             json.dump({
