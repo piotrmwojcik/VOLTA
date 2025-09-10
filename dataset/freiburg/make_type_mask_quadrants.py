@@ -36,7 +36,7 @@ def build_outname(src: Path, qk: str) -> str:
     m = re.match(r"^(.*)__polygon_(\d+)__type-mask\.png$", name, re.IGNORECASE)
     if m:
         pre, num = m.groups()
-        return f"{pre}__mask_{num}__{qk}.png"
+        return f"{pre}__type-mask_{num}__{qk}.png"
     stem, ext = src.stem, src.suffix
     return f"{stem}__{qk}{ext}"
 
