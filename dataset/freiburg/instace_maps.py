@@ -17,6 +17,7 @@ from scipy import ndimage
 # Hardcoded directory
 SRC_DIR = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_within")
 
+
 def build_instance_map(mask_path: Path) -> np.ndarray:
     """Create an instance map where each connected component gets a unique ID."""
     mask = np.array(Image.open(mask_path)).astype(np.int32)
@@ -50,6 +51,7 @@ def main():
         print(f"[OK] Saved {out_path} with shape {inst_map.shape} and max ID {inst_map.max()}")
 
     print(f"[DONE] Processed {len(files)} file(s).")
+
 
 if __name__ == "__main__":
     main()
