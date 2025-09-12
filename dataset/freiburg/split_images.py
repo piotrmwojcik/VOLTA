@@ -127,29 +127,14 @@ def main():
             crop_img.save(out_img_path)
 
             # If we have a mask, crop with the exact same box and save alongside
+            # If we have a mask, crop with the exact same box and save alongside
             if mask is not None:
                 box = boxes[qk]
                 mask_crop = mask.crop(box)
-
-                # --- split the type-mask into 4 parts and save each ---
-                w, h = mask_crop.size
-                x_mid = w // 2
-                y_mid = h // 2
-
-                parts = {
-                    "tl": (0, 0, x_mid, y_mid),  # top-left
-                    "tr": (x_mid, 0, w, y_mid),  # top-right
-                    "bl": (0, y_mid, x_mid, h),  # bottom-left
-                    "br": (x_mid, y_mid, w, h),  # bottom-right
-                }
-
+                out_mask_name = f"{stem}__{qk}__type-mask.png"
+                out_mask_path = IN_DIR / out_mask_name
                 # Save without conversion to keep palette + class IDs intact
-                for tag, b in parts.items():
-                    part = mask_crop.crop(b)
-                    out_mask_name = f"{stem}__{qk}__type-mask__{tag}.png"
-                    out_mask_path = IN_DIR / out_mask_name
-                    part.save(out_mask_path)
-                # ------------------------------------------------------
+                mask_crop.save(out_mask_path)
 
             out_key = f"{IMG_KEY_PREFIX}/{out_img_name}"
             out_dict[out_key] = quad_points[qk]
