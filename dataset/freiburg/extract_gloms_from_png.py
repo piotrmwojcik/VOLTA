@@ -194,7 +194,6 @@ def cut_rectangles_png_with_overlay(
             66, 135, 245,  # 1: opal_480
             40, 167, 69,  # 2: opal_520
             255, 193, 7,  # 3: opal_570
-            220, 53, 69,  # 4: unclassified
             111, 66, 193,  # 5: opal_620
         ]
         palette += [0, 0, 0] * (256 - len(CLASSES))  # pad
