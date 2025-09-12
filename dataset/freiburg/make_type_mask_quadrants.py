@@ -16,7 +16,7 @@ from pathlib import Path
 from PIL import Image
 
 # Hardcoded source directory
-SRC_DIR = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_within")
+SRC_DIR = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_new")
 
 def split_quadrants(img: Image.Image):
     """Return dict of 4 crops split by image midlines."""
