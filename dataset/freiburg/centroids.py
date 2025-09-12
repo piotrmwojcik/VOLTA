@@ -3,12 +3,12 @@ import json
 from pathlib import Path
 
 # ----- config -----
-IN_DIR = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_within")      # folder containing *_bboxes.json files
+IN_DIR = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_new")      # folder containing *_bboxes.json files
 OUT_PATH = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_within/train.json")
-IMG_KEY_PREFIX = "/data/pwojcik/For_Piotr/gloms_rect_from_png_within"  # prefix for keys in the output
+IMG_KEY_PREFIX = "/data/pwojcik/For_Piotr/gloms_rect_from_png_new"  # prefix for keys in the output
 
 # classes we want
-CLASSES = ["_empty", "opal_480", "opal_520", "opal_570", "unclassified", "opal_620"]
+CLASSES = ["_empty", "opal_480", "opal_520", "opal_570","opal_620"]
 
 # normalized label -> class index
 def norm(s: str) -> str:
