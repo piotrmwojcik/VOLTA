@@ -38,6 +38,7 @@ def build_instance_map(mask_path: Path) -> np.ndarray:
 
     return inst_map
 
+
 def main():
     files = sorted(SRC_DIR.glob("old__*__type-mask_*__q*.png"))
     if not files:
