@@ -4,8 +4,8 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 # ========= CONFIG =========
-COMBINED_JSON = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_within/train.json")   # path to your combined JSON                         # root to resolve image paths in JSON (if they are relative)
-OUT_DIR = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_within/dots_preview")           # where to save dotted images
+COMBINED_JSON = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_new/train.json")   # path to your combined JSON                         # root to resolve image paths in JSON (if they are relative)
+OUT_DIR = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_new/dots_preview")           # where to save dotted images
 DOT_RADIUS = 4                                  # pixels
 DOT_ALPHA = 200                                 # 0..255
 DRAW_LEGEND = True
