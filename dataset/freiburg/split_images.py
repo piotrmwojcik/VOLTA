@@ -4,11 +4,11 @@ from pathlib import Path
 from PIL import Image
 
 # ========= CONFIG =========
-IN_DIR = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_within")      # folder containing *_bboxes.json files
-OUT_PATH = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_within/train.json")
-IMG_KEY_PREFIX = "/data/pwojcik/For_Piotr/gloms_rect_from_png_within"   # prefix for keys in the output
+IN_DIR = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_new")      # folder containing *_bboxes.json files
+OUT_PATH = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_new/train.json")
+IMG_KEY_PREFIX = "/data/pwojcik/For_Piotr/gloms_rect_from_png_new"   # prefix for keys in the output
 
-CLASSES = ["_empty", "opal_480", "opal_520", "opal_570", "unclassified", "opal_620"]
+CLASSES = ["_empty", "opal_480", "opal_520", "opal_570", "opal_620"]
 # ==========================
 
 def split_and_remap_points(img: Image.Image, points_per_class):
