@@ -17,6 +17,7 @@ from affine import Affine
 Image.MAX_IMAGE_PIXELS = None
 warnings.simplefilter("ignore", DecompressionBombWarning)
 
+IGNORE_LABELS = {"unclassified"}
 
 CLASSES = [
     "_empty",       # 0
@@ -155,6 +156,8 @@ def cut_rectangles_png_with_overlay(
                             continue
 
                         lab = map_to_known_class(normalize_label(raw_lab))
+                        if lab in IGNORE_LABELS:
+                            continue  # <- skip unclassified entirely
                         per_label_geoms.setdefault(lab, []).append(g2)
 
                         # bbox in crop pixel space
@@ -247,7 +250,7 @@ def cut_rectangles_png_with_overlay(
 
 # ----------------- batch runner (PNG) -----------------
 if __name__ == "__main__":
-    out_root = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_within")
+    out_root = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_new")
     out_root.mkdir(parents=True, exist_ok=True)
 
     datasets_cfg = [
@@ -303,7 +306,11 @@ if __name__ == "__main__":
                 global_labels.add("_empty")
             continue
         for lab in cells_gdf["classification"].map(extract_annotation_name):
-            global_labels.add(normalize_label("" if lab is None else str(lab)))
+            norm = normalize_label("" if lab is None else str(lab))
+            mapped = map_to_known_class(norm)
+            if mapped in IGNORE_LABELS:
+                continue  # <- do not show unclassified in legend
+            global_labels.add(norm)
 
     global_labels = sorted(global_labels)
     print("Global labels:", [pretty_label(l) for l in global_labels])
