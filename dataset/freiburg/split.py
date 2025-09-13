@@ -4,9 +4,9 @@ import random
 from pathlib import Path
 
 # ===== CONFIG =====
-TRAIN_IN  = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_within/train.json")  # input train.json
-TRAIN_OUT = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_within/train.json")  # overwrite train.json
-TEST_OUT  = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_within/test.json")   # new test.json
+TRAIN_IN  = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_new/train.json")  # input train.json
+TRAIN_OUT = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_new/train.json")  # overwrite train.json
+TEST_OUT  = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_new/test.json")   # new test.json
 SPLIT_FRAC = 0.1   # 10% goes to test
 RANDOM_SEED = 42   # for reproducibility
 # ==================
