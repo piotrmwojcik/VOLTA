@@ -15,7 +15,7 @@ from PIL import Image
 from scipy import ndimage
 
 # Hardcoded directory
-SRC_DIR = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_within")
+SRC_DIR = Path("/data/pwojcik/For_Piotr/gloms_rect_from_png_new")
 
 
 def build_instance_map(mask_path: Path) -> np.ndarray:
