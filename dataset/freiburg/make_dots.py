@@ -18,7 +18,6 @@ FIXED_COLORS = {
     "opal_480":     ( 55, 126, 184),  # blue
     "opal_520":     ( 77, 175,  74),  # green
     "opal_570":     (228,  26,  28),  # red
-    "unclassified": (152,  78, 163),  # purple
     "opal_620":     (255, 127,   0),  # orange
 }
 
@@ -122,6 +121,7 @@ def main():
         out_path = OUT_DIR / out_name
         dotted.convert("RGB").save(out_path)
         print(f"[OK] {out_path}")
+
 
 if __name__ == "__main__":
     main()
