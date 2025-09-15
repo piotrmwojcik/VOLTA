@@ -190,7 +190,7 @@ def cut_rectangles_png_with_overlay(
 
         # Optional: palette PNG for visualization (values remain class IDs 0..5)
         palette = [
-            0, 0, 0,  # 0: _empty
+            255, 255, 255,  # 0: _empty
             66, 135, 245,  # 1: opal_480
             40, 167, 69,  # 2: opal_520
             255, 193, 7,  # 3: opal_570
