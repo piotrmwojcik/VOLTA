@@ -40,7 +40,7 @@ def build_instance_map(mask_path: Path) -> np.ndarray:
 
 
 def main():
-    files = sorted(SRC_DIR.glob("old__*__q*__type-mask_.png"))
+    files = sorted(SRC_DIR.glob("old__*__q*__type-mask.png"))
     if not files:
         print(f"[WARN] No type-mask files found in {SRC_DIR}")
         return
