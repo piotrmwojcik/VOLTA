@@ -20,11 +20,12 @@ warnings.simplefilter("ignore", DecompressionBombWarning)
 IGNORE_LABELS = {"unclassified"}
 
 CLASSES = [
-    "_empty",       # 0
-    "opal_480",     # 1
-    "opal_520",     # 2
-    "opal_570",     # 3
-    "opal_620",     # 5
+    "_background",   # 0  <- new, will rasterize to black
+    "_empty",        # 1  <- empty cells, will rasterize to white
+    "opal_480",      # 2
+    "opal_520",      # 3
+    "opal_570",      # 4
+    "opal_620",      # 5
 ]
 LABEL_TO_ID = {name: i for i, name in enumerate(CLASSES)}
 
@@ -189,10 +190,11 @@ def cut_rectangles_png_with_overlay(
 
         # Optional: palette PNG for visualization (values remain class IDs 0..5)
         palette = [
-            255, 255, 255,  # 0: _empty
-            66, 135, 245,  # 1: opal_480
-            40, 167, 69,  # 2: opal_520
-            255, 193, 7,  # 3: opal_570
+            0, 0, 0,  # 0: _background (black)
+            255, 255, 255,  # 1: _empty (white)
+            66, 135, 245,  # 2: opal_480
+            40, 167, 69,  # 3: opal_520
+            255, 193, 7,  # 4: opal_570
             111, 66, 193,  # 5: opal_620
         ]
         palette += [0, 0, 0] * (256 - len(CLASSES))  # pad
