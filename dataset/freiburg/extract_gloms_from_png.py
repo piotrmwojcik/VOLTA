@@ -24,7 +24,6 @@ CLASSES = [
     "opal_480",     # 1
     "opal_520",     # 2
     "opal_570",     # 3
-    "unclassified", # 4
     "opal_620",     # 5
 ]
 LABEL_TO_ID = {name: i for i, name in enumerate(CLASSES)}
