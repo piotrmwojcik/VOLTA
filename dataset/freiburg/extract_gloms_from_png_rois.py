@@ -104,6 +104,7 @@ if __name__ == "__main__":
         roi_geojsons = sorted(labels_dir.glob("*.geojson"))
         for gj in roi_geojsons:
             stem = gj.stem
+            print('!!! ', stem, gj.stem)
             img = find_image_for(stem, images_dir)
             if img is None:
                 print(f"[SKIP {tag}] Missing PNG for {stem}")
