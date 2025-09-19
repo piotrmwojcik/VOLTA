@@ -30,10 +30,14 @@ CLASSES = [
 LABEL_TO_ID = {name: i for i, name in enumerate(CLASSES)}
 
 def map_to_known_class(norm_lab: str) -> str:
-    """Normalize → map unknown labels to 'unclassified' (except '_empty')."""
+    """Normalize → map unknown labels and 'unclassified' to '_empty'."""
+    if norm_lab == "_empty":
+        return "_empty"
+    if norm_lab == "unclassified":
+        return "_empty"
     if norm_lab in CLASSES:
         return norm_lab
-    return "_empty" if norm_lab == "_empty" else "unclassified"
+    return "_empty"
 
 # ----------------- helpers -----------------
 def extract_annotation_name(value):
@@ -156,8 +160,8 @@ def cut_rectangles_png_with_overlay(
                             continue
 
                         lab = map_to_known_class(normalize_label(raw_lab))
-                        if lab in IGNORE_LABELS:
-                            continue  # <- skip unclassified entirely
+                        #if lab in IGNORE_LABELS:
+                        #    continue  # <- skip unclassified entirely
                         per_label_geoms.setdefault(lab, []).append(g2)
 
                         # bbox in crop pixel space
@@ -307,10 +311,8 @@ if __name__ == "__main__":
             continue
         for lab in cells_gdf["classification"].map(extract_annotation_name):
             norm = normalize_label("" if lab is None else str(lab))
-            mapped = map_to_known_class(norm)
-            if mapped in IGNORE_LABELS:
-                continue  # <- do not show unclassified in legend
-            global_labels.add(norm)
+            mapped = map_to_known_class(norm)  # maps 'unclassified' -> '_empty'
+            global_labels.add(mapped)
 
     global_labels = sorted(global_labels)
     print("Global labels:", [pretty_label(l) for l in global_labels])
