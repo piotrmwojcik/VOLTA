@@ -28,22 +28,18 @@ def read_type_map(mask_path: Path) -> np.ndarray:
     return type_map
 
 def build_instance_map(type_map: np.ndarray) -> np.ndarray:
-    """Create an instance map where each connected component (within each class) gets a unique ID."""
     H, W = type_map.shape
     inst_map = np.zeros((H, W), dtype=np.int32)
 
     next_id = 0
     max_class = int(type_map.max()) if type_map.size else -1
 
-    for cls in range(max_class + 1):
+    # skip background class 0
+    for cls in range(1, max_class + 1):
         binary = (type_map == cls)
         if not np.any(binary):
             continue
-        labeled, n = ndimage.label(binary)  # 4-connectivity by default; use structure for 8 if needed
-        if n == 0:
-            continue
-        # Assign unique IDs across all classes
-        # labeled == i are pixels of the ith component (1..n)
+        labeled, n = ndimage.label(binary)  # 4-connectivity; pass structure for 8-connectivity
         for i in range(1, n + 1):
             inst_map[labeled == i] = next_id
             next_id += 1
@@ -78,6 +74,7 @@ def main():
         )
 
     print(f"[DONE] Processed {len(files)} file(s).")
+
 
 if __name__ == "__main__":
     main()
